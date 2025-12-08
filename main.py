@@ -1,6 +1,6 @@
 import time
-import re
 import pandas as pd
+from io import StringIO
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # --- CONFIGURAÇÃO ---
 ID_CRI = "94856"
 URL = f"https://www.vortx.com.br/investidor/dcm/operacao?id={ID_CRI}"
+DATA_ALVO_PU = "08/12/2025" # Data que você quer buscar na tabela de PU
 NOME_ARQUIVO = "dados_cri_vortx.xlsx"
 
 def setup_driver():
@@ -21,98 +22,128 @@ def setup_driver():
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return webdriver.Chrome(options=options)
 
-def buscar_valor_por_texto(driver, termos_busca):
-    """
-    Tenta encontrar um valor na página procurando por rótulos de texto (ex: 'Remuneração').
-    Retorna o texto do elemento seguinte ou do pai, dependendo da estrutura.
-    """
-    for termo in termos_busca:
-        try:
-            # Estratégia 1: Procura um elemento que contenha o texto e pega o próximo elemento (sibling)
-            # Muito comum em estruturas <dt>Label</dt> <dd>Valor</dd> ou <div>Label</div> <div>Valor</div>
-            xpath = f"//*[contains(text(), '{termo}')]/following-sibling::*[1]"
-            elemento = driver.find_element(By.XPATH, xpath)
-            if elemento.text.strip():
-                return elemento.text.strip()
-            
-            # Estratégia 2: Pega o pai e vê se o valor está dentro (ex: <div>Label: Valor</div>)
-            xpath_pai = f"//*[contains(text(), '{termo}')]/.."
-            elemento_pai = driver.find_element(By.XPATH, xpath_pai)
-            texto_pai = elemento_pai.text.replace(termo, "").strip()
-            # Limpa caracteres extras como ":" ou "-"
-            texto_pai = re.sub(r"^[:\-\s]+", "", texto_pai)
-            if texto_pai:
-                return texto_pai
+def clicar_aba(driver, nome_aba):
+    """Função robusta para achar e clicar nas abas"""
+    print(f"Tentando clicar na aba '{nome_aba}'...")
+    try:
+        # Tenta achar links ou botões que contenham o texto da aba
+        # O xpath procura: qualquer elemento 'a' ou 'div' ou 'span' que tenha o texto exato ou parcial
+        xpath = f"//*[self::a or self::div or self::span or self::button][contains(text(), '{nome_aba}')]"
+        elementos = driver.find_elements(By.XPATH, xpath)
+        
+        for elem in elementos:
+            # Verifica se o elemento está visível e clicável
+            if elem.is_displayed():
+                driver.execute_script("arguments[0].click();", elem)
+                time.sleep(5) # Espera o conteúdo da aba carregar
+                print(f"Aba '{nome_aba}' clicada com sucesso.")
+                return True
+        print(f"Aviso: Não encontrei elemento clicável para aba '{nome_aba}'.")
+        return False
+    except Exception as e:
+        print(f"Erro ao clicar na aba {nome_aba}: {e}")
+        return False
 
-        except:
-            continue
-    return "Não encontrado"
+def extrair_links(driver):
+    """Extrai texto e href de todos os links visíveis na área de conteúdo"""
+    dados = []
+    try:
+        # Pega links que parecem documentos (PDFs ou visualizações)
+        links = driver.find_elements(By.TAG_NAME, "a")
+        for link in links:
+            href = link.get_attribute('href')
+            texto = link.text.strip()
+            
+            # Filtra apenas links relevantes (com download, pdf ou visualizar) e que tenham texto
+            if href and texto and ('id=' in href or '.pdf' in href or 'download' in href or 'visualizar' in href):
+                # Evita links de menu/navegação
+                if len(texto) > 3: 
+                    dados.append({"Documento": texto, "Link": href})
+    except Exception as e:
+        print(f"Erro ao extrair links: {e}")
+    return dados
 
 def run():
-    print(f"--- Iniciando Extração Detalhada para ID: {ID_CRI} ---")
+    print(f"--- Iniciando Extração Completa para ID: {ID_CRI} ---")
     driver = setup_driver()
     
-    dados = {
-        "ID Vórtx": ID_CRI,
-        "Data Extração": time.strftime("%d/%m/%Y")
-    }
+    # Dicionário para guardar os DataFrames de cada aba do Excel
+    excel_sheets = {}
 
     try:
         driver.get(URL)
-        # Espera generosa para garantir carregamento dos componentes
-        time.sleep(12)
+        time.sleep(10) # Espera inicial do site
         
-        # 1. Dados Básicos (Geralmente no topo ou Visão Geral)
-        # Mapeamento: "Nome da Coluna no Excel": ["Possíveis nomes no site"]
-        mapa_campos = {
-            "Emissor": ["Emissor", "Devedor", "Cedente"],
-            "Código IF": ["Código IF", "Ticker", "Código"],
-            "Volume Emitido": ["Volume Total", "Valor da Emissão", "Volume Emitido"],
-            "Quantidade Emitida": ["Quantidade", "Qtd. Emitida"],
-            "PU de Emissão": ["PU de Emissão", "Valor Unitário", "Preço Unitário"],
-            "Data de Emissão": ["Data de Emissão", "Início"],
-            "Data de Vencimento": ["Vencimento", "Data de Vencimento"],
-            "Remuneração": ["Taxa", "Remuneração", "Juros"],
-            "Pagamento de Juros": ["Pagamento de Juros", "Periodicidade Juros"],
-            "Amortização": ["Amortização", "Periodicidade Amortização"],
-            "Distribuição": ["Distribuição", "Tipo de Oferta"],
-            "Tipo de Risco": ["Risco", "Rating", "Classificação de Risco"],
-        }
+        # --- PARTE 1: PU ---
+        if clicar_aba(driver, "PU"):
+            print("Processando tabela de PU...")
+            try:
+                # O Pandas lê as tabelas HTML automaticamente
+                dfs = pd.read_html(StringIO(driver.page_source))
+                tabela_pu = pd.DataFrame()
+                
+                # Procura qual tabela tem a coluna "Data" e "PU"
+                for df in dfs:
+                    cols = [c.lower() for c in df.columns]
+                    if any("data" in c for c in cols) and any("pu" in c for c in cols):
+                        tabela_pu = df
+                        break
+                
+                if not tabela_pu.empty:
+                    # Filtra pela data específica
+                    # Normaliza nomes de colunas para facilitar
+                    tabela_pu.columns = [c.strip() for c in tabela_pu.columns]
+                    
+                    # Tenta achar a linha da data alvo
+                    # Assume que a coluna de data é a primeira ou tem 'Data' no nome
+                    col_data = [c for c in tabela_pu.columns if "Data" in c or "Referência" in c][0]
+                    
+                    # Filtra
+                    resultado_pu = tabela_pu[tabela_pu[col_data] == DATA_ALVO_PU]
+                    
+                    if not resultado_pu.empty:
+                        print(f"PU encontrado para {DATA_ALVO_PU}!")
+                        excel_sheets["PU"] = resultado_pu
+                    else:
+                        print(f"Data {DATA_ALVO_PU} não encontrada na tabela visível. Salvando tabela completa.")
+                        excel_sheets["PU"] = tabela_pu # Salva tudo se não achar a data exata
+                else:
+                    print("Nenhuma tabela de PU identificada.")
+            except Exception as e:
+                print(f"Erro ao processar PU: {e}")
 
-        # Extração automática baseada no mapa
-        for campo, termos in mapa_campos.items():
-            valor = buscar_valor_por_texto(driver, termos)
-            dados[campo] = valor
-            print(f"> {campo}: {valor}")
+        # --- PARTE 2: Documentos ---
+        # Recarrega ou clica na aba (se necessário)
+        if clicar_aba(driver, "Documentos"):
+            print("Extraindo Documentos...")
+            docs_data = extrair_links(driver)
+            if docs_data:
+                excel_sheets["Documentos"] = pd.DataFrame(docs_data)
+                print(f"Encontrados {len(docs_data)} documentos.")
+            else:
+                excel_sheets["Documentos"] = pd.DataFrame([{"Aviso": "Nenhum documento encontrado"}])
 
-        # 2. Tratamento Especial: Garantias
-        # Garantias costumam ser textos longos ou estar em abas.
-        # Vamos tentar pegar o bloco de texto se houver uma seção específica.
-        print("Buscando Garantias...")
-        try:
-            # Tenta clicar na aba garantias se existir
-            abas = driver.find_elements(By.TAG_NAME, "a")
-            for aba in abas:
-                if "Garantia" in aba.text:
-                    driver.execute_script("arguments[0].click();", aba)
-                    time.sleep(3)
-                    break
-            
-            # Pega o texto da área visível ou procura pelo termo
-            garantias = buscar_valor_por_texto(driver, ["Garantias", "Descrição das Garantias"])
-            dados["Garantias"] = garantias
-        except:
-            dados["Garantias"] = "Erro ao buscar garantias"
+        # --- PARTE 3: Assembleias ---
+        if clicar_aba(driver, "Assembleias"):
+            print("Extraindo Assembleias...")
+            ass_data = extrair_links(driver)
+            if ass_data:
+                excel_sheets["Assembleias"] = pd.DataFrame(ass_data)
+                print(f"Encontradas {len(ass_data)} assembleias.")
+            else:
+                excel_sheets["Assembleias"] = pd.DataFrame([{"Aviso": "Nenhuma assembleia encontrada"}])
 
-        # 3. Geração do Excel
-        df = pd.DataFrame([dados])
-        df.to_excel(NOME_ARQUIVO, index=False)
-        print(f"\n✅ Excel gerado com sucesso: {NOME_ARQUIVO}")
+        # --- GERAÇÃO DO ARQUIVO EXCEL ---
+        if excel_sheets:
+            with pd.ExcelWriter(NOME_ARQUIVO, engine='openpyxl') as writer:
+                for sheet_name, df in excel_sheets.items():
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"\n✅ Arquivo Excel gerado com sucesso com as abas: {list(excel_sheets.keys())}")
+        else:
+            print("❌ Nenhum dado foi coletado para gerar o Excel.")
 
     except Exception as e:
         print(f"Erro fatal: {e}")
-        # Gera um excel de erro para não quebrar o workflow
-        pd.DataFrame([{"Erro": str(e)}]).to_excel(NOME_ARQUIVO)
         
     finally:
         driver.quit()
