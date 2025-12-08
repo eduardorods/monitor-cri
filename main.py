@@ -4,7 +4,7 @@ from io import StringIO
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException
 
 # --- CONFIGURAÇÃO ---
 ID_CRI = "94856"
@@ -20,136 +20,153 @@ def setup_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # --- PROTEÇÃO ANTI-TRAVAMENTO 1 ---
-    # 'eager': O navegador libera o controle assim que o HTML baixa, 
-    # sem esperar imagens ou estilos terminarem.
-    options.page_load_strategy = 'eager'
+    # Removemos o 'eager' para garantir que os scripts rodem
+    # options.page_load_strategy = 'eager' 
     
     driver = webdriver.Chrome(options=options)
     
-    # --- PROTEÇÃO ANTI-TRAVAMENTO 2 ---
-    # Se uma ação demorar mais de 60 segundos, o driver aborta com erro
+    # Timeout rígido: Se travar por 60s, ele desiste e segue o baile
     driver.set_page_load_timeout(60)
     driver.set_script_timeout(60)
     
     return driver
 
+def salvar_print(driver, nome):
+    try:
+        driver.save_screenshot(f"{nome}.png")
+        print(f"📸 Screenshot salvo: {nome}.png")
+    except:
+        pass
+
 def clicar_aba(driver, nome_aba):
     print(f"   > Procurando aba '{nome_aba}'...")
     try:
-        # Tenta achar links ou botões que contenham o texto da aba
-        xpath = f"//*[self::a or self::div or self::span][contains(text(), '{nome_aba}')]"
+        # Procura por qualquer elemento clicável com o texto
+        xpath = f"//*[contains(text(), '{nome_aba}')]"
         elementos = driver.find_elements(By.XPATH, xpath)
         
         for elem in elementos:
+            # Filtra apenas elementos visíveis
             if elem.is_displayed():
-                # Clica via Javascript para evitar travamento de UI
+                # Tenta clicar no elemento ou no pai dele (caso o texto esteja num span dentro de um botão)
                 driver.execute_script("arguments[0].click();", elem)
-                time.sleep(5) # Espera fixa segura
-                print(f"   > Aba '{nome_aba}' clicada.")
+                time.sleep(5) # Espera o conteúdo carregar após o clique
                 return True
+        print(f"   > Aba '{nome_aba}' não encontrada ou não clicável.")
         return False
     except Exception as e:
-        print(f"   > Aviso: Não foi possível clicar na aba {nome_aba}. Erro: {str(e)[:100]}")
+        print(f"   > Erro ao tentar aba {nome_aba}: {e}")
         return False
 
 def extrair_links(driver):
     dados = []
     try:
+        # Pega todos os links da página
         links = driver.find_elements(By.TAG_NAME, "a")
         for link in links:
             try:
                 href = link.get_attribute('href')
                 texto = link.text.strip()
-                if href and texto and ('id=' in href or '.pdf' in href or 'download' in href or 'visualizar' in href):
-                    if len(texto) > 3: 
+                # Filtros para pegar apenas documentos úteis
+                if href and texto and len(texto) > 3:
+                    if any(x in href for x in ['id=', '.pdf', 'download', 'visualizar']):
                         dados.append({"Descrição": texto, "Link": href})
             except:
-                continue # Se um link falhar, pula para o próximo
-    except Exception as e:
-        print(f"Erro ao ler links: {e}")
+                continue
+    except:
+        pass
     return dados
 
 def run():
-    print(f"--- Iniciando (Timeout configurado para 60s por ação) ---")
-    print(f"Alvo: {URL}")
-    
+    print(f"--- Iniciando Monitor Vórtx (Com Screenshots) ---")
     driver = setup_driver()
     excel_sheets = {}
 
     try:
-        # Acesso Inicial com Tratamento de Timeout
+        # 1. Acesso ao Site
         try:
+            print("Carregando página...")
             driver.get(URL)
         except TimeoutException:
-            print("⚠️ Alerta: O site demorou muito para carregar, mas vamos tentar continuar com o que baixou.")
-            driver.execute_script("window.stop();") # Força parada do carregamento
+            print("⚠️ Timeout no carregamento inicial (Site lento). Tentando continuar...")
+            driver.execute_script("window.stop();")
         
-        time.sleep(5) # Espera o Javascript renderizar o básico
-        
-        # --- 1. PU ---
-        print("\n[1/3] Processando PU...")
-        if clicar_aba(driver, "PU"):
-            try:
-                # Limita a leitura a tabelas visíveis
-                html = driver.page_source
-                if "<table" in html:
-                    dfs = pd.read_html(StringIO(html))
+        # Espera extra para o JS montar a tela
+        time.sleep(10)
+        salvar_print(driver, "1_pagina_inicial")
+
+        # 2. Verifica se carregou certo
+        if "444" in driver.page_source or "working" in driver.page_source:
+            print("❌ Bloqueio detectado no HTML.")
+            excel_sheets["Erro"] = pd.DataFrame([{"Erro": "Bloqueio 444 detectado"}])
+        else:
+            # --- ABA PU ---
+            print("\n--- Processando PU ---")
+            if clicar_aba(driver, "PU"):
+                salvar_print(driver, "2_aba_pu")
+                try:
+                    dfs = pd.read_html(StringIO(driver.page_source))
+                    found_pu = False
                     for df in dfs:
-                        cols = [str(c).lower() for c in df.columns]
-                        if any("data" in c for c in cols) and any("pu" in c for c in cols):
-                            # Limpeza e Filtro
-                            tabela_pu = df.copy()
-                            col_data = [c for c in tabela_pu.columns if "Data" in str(c) or "Referência" in str(c)][0]
-                            # Filtra pela data
-                            resultado = tabela_pu[tabela_pu[col_data].astype(str).str.contains(DATA_ALVO_PU, na=False)]
+                        # Verifica se é a tabela de PU (tem coluna Data e PU)
+                        cols = " ".join([str(c).lower() for c in df.columns])
+                        if "data" in cols and "pu" in cols:
+                            # Tenta filtrar
+                            df = df.astype(str) # Converte tudo para texto para facilitar busca
+                            col_data = [c for c in df.columns if "Data" in str(c) or "Referência" in str(c)][0]
                             
-                            if not resultado.empty:
-                                excel_sheets["PU_Alvo"] = resultado
-                                print(f"   > PU de {DATA_ALVO_PU} encontrado!")
+                            alvo = df[df[col_data].str.contains(DATA_ALVO_PU, na=False)]
+                            if not alvo.empty:
+                                excel_sheets["PU_Alvo"] = alvo
+                                print(f"✅ PU de {DATA_ALVO_PU} encontrado!")
                             else:
-                                excel_sheets["PU_Historico"] = tabela_pu.head(20) # Salva as 20 ultimas se nao achar
-                                print(f"   > Data não encontrada. Salvando histórico recente.")
+                                excel_sheets["PU_Completo"] = df
+                                print(f"⚠️ Data {DATA_ALVO_PU} não achada. Salvando tabela inteira.")
+                            found_pu = True
                             break
-            except Exception as e:
-                print(f"   > Erro no processamento de PU: {e}")
+                    if not found_pu:
+                        print("Nenhuma tabela de PU reconhecida no HTML.")
+                except Exception as e:
+                    print(f"Erro ao ler tabela PU: {e}")
 
-        # --- 2. Documentos ---
-        print("\n[2/3] Processando Documentos...")
-        # Recarrega a página para limpar o estado se necessário, ou clica direto
-        if clicar_aba(driver, "Documentos"):
-            docs = extrair_links(driver)
-            if docs:
-                excel_sheets["Documentos"] = pd.DataFrame(docs)
-                print(f"   > {len(docs)} documentos listados.")
+            # --- ABA DOCUMENTOS ---
+            print("\n--- Processando Documentos ---")
+            if clicar_aba(driver, "Documentos"):
+                salvar_print(driver, "3_aba_docs")
+                docs = extrair_links(driver)
+                if docs:
+                    excel_sheets["Documentos"] = pd.DataFrame(docs)
+                    print(f"✅ {len(docs)} documentos encontrados.")
+                else:
+                    print("Nenhum link capturado.")
 
-        # --- 3. Assembleias ---
-        print("\n[3/3] Processando Assembleias...")
-        if clicar_aba(driver, "Assembleias"):
-            atas = extrair_links(driver)
-            if atas:
-                excel_sheets["Assembleias"] = pd.DataFrame(atas)
-                print(f"   > {len(atas)} assembleias listadas.")
+            # --- ABA ASSEMBLEIAS ---
+            print("\n--- Processando Assembleias ---")
+            if clicar_aba(driver, "Assembleias"):
+                salvar_print(driver, "4_aba_assembleias")
+                atas = extrair_links(driver)
+                if atas:
+                    excel_sheets["Assembleias"] = pd.DataFrame(atas)
+                    print(f"✅ {len(atas)} assembleias encontradas.")
 
-        # --- FIM ---
+        # --- GERAÇÃO FINAL ---
         if excel_sheets:
-            print(f"\nGerando Excel com abas: {list(excel_sheets.keys())}...")
+            print(f"\nGerando Excel...")
             with pd.ExcelWriter(NOME_ARQUIVO, engine='openpyxl') as writer:
                 for nome, df in excel_sheets.items():
-                    df.to_excel(writer, sheet_name=nome[:30], index=False) # Excel limita nome de aba a 31 chars
-            print("✅ Sucesso!")
+                    df.to_excel(writer, sheet_name=nome[:30], index=False)
+            print("Arquivo salvo com sucesso.")
         else:
-            print("❌ Nenhum dado coletado.")
+            print("❌ Nenhuma informação capturada. Gerando Excel de aviso.")
+            df_erro = pd.DataFrame([{"Status": "Falha", "Motivo": "Nenhuma tabela ou link encontrado. Verifique os prints."}])
+            df_erro.to_excel(NOME_ARQUIVO, index=False)
 
     except Exception as e:
-        print(f"❌ Erro Crítico no Script: {e}")
+        print(f"Erro fatal: {e}")
+        pd.DataFrame([{"Erro Fatal": str(e)}]).to_excel(NOME_ARQUIVO)
         
     finally:
-        print("Fechando navegador...")
-        try:
-            driver.quit()
-        except:
-            pass
+        driver.quit()
 
 if __name__ == "__main__":
     run()
