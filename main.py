@@ -23,7 +23,7 @@ def setup_driver():
     options.add_argument('--lang=pt-BR')
     
     # Inicializa o driver "stealth"
-    driver = uc.Chrome(options=options, version_main=None)
+    driver = uc.Chrome(options=options, version_main=142)
     driver.set_page_load_timeout(60)
     return driver
 
