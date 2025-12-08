@@ -28,5 +28,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Relatorio_CRI
-          path: dados_cri_vortx.xlsx
+          path: |
+            dados_cri_vortx.xlsx
+            *.png
           retention-days: 5
