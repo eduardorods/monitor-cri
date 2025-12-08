@@ -1,7 +1,7 @@
-name: Monitor Vórtx
+name: Monitor Vórtx Excel
 
 on:
-  workflow_dispatch: # Permite rodar manualmente clicando num botão
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,7 +18,14 @@ jobs:
 
       - name: Instalar Dependências
         run: |
-          pip install selenium
+          pip install selenium pandas openpyxl
 
-      - name: Rodar Script
+      - name: Rodar Script de Extração
         run: python main.py
+
+      - name: Upload do Arquivo Excel
+        uses: actions/upload-artifact@v4
+        with:
+          name: Relatorio_CRI
+          path: dados_cri_vortx.xlsx
+          retention-days: 5
