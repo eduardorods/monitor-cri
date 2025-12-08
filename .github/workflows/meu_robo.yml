@@ -19,7 +19,7 @@ jobs:
 
       - name: Instalar Dependências
         run: |
-          pip install selenium pandas openpyxl
+          pip install selenium pandas openpyxl undetected-chromedriver
 
       - name: Rodar Script de Extração
         run: python main.py
