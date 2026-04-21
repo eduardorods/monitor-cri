@@ -1,0 +1,211 @@
+import base64
+import datetime
+import json
+from dataclasses import dataclass, field, asdict
+from typing import Any, Iterator, Optional
+from urllib.parse import urljoin
+
+import requests
+
+
+FUNDS_CALL_URL = "https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/"
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+}
+
+
+@dataclass
+class Documento:
+    nome: Optional[str] = None
+    tipo: Optional[str] = None
+    categoria: Optional[str] = None
+    data_entrega: Optional[str] = None
+    data_referencia: Optional[str] = None
+    url: Optional[str] = None
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
+class CRIInfo:
+    codigo_if: Optional[str] = None
+    cnpj_securitizadora: Optional[str] = None
+    nome_securitizadora: Optional[str] = None
+    emissao: Optional[str] = None
+    serie: Optional[str] = None
+    data_emissao: Optional[str] = None
+    data_vencimento: Optional[str] = None
+    remuneracao: Optional[str] = None
+    valor_nominal: Optional[str] = None
+    quantidade: Optional[str] = None
+    ativo_lastro: Optional[str] = None
+    documentos: list = field(default_factory=list)
+    raw: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["documentos"] = [asdict(d) for d in self.documentos]
+        return data
+
+
+class B3Client:
+    def __init__(self, session: Optional[requests.Session] = None, timeout: int = 30):
+        self.session = session or requests.Session()
+        self.session.headers.update(DEFAULT_HEADERS)
+        self.timeout = timeout
+
+    def _encode_params(self, params: dict) -> str:
+        payload = json.dumps(params, separators=(",", ":"))
+        return base64.b64encode(payload.encode("utf-8")).decode("ascii")
+
+    def _get(self, endpoint: str, params: dict) -> Any:
+        url = urljoin(FUNDS_CALL_URL, endpoint) + self._encode_params(params)
+        response = self.session.get(url, timeout=self.timeout)
+        response.raise_for_status()
+        return response.json()
+
+    def _paginate(self, endpoint: str, params: Optional[dict] = None) -> Iterator[dict]:
+        params = dict(params or {})
+        params.setdefault("pageNumber", 1)
+        params.setdefault("pageSize", 100)
+        while True:
+            data = self._get(endpoint, params)
+            if isinstance(data, list):
+                yield from data
+                return
+            if isinstance(data, dict) and "results" in data:
+                yield from data["results"]
+                page_info = data.get("page") or {}
+                total_pages = page_info.get("totalPages", 1)
+                if params["pageNumber"] >= total_pages:
+                    return
+                params["pageNumber"] += 1
+            else:
+                yield data
+                return
+
+    def securitizadoras(self) -> Iterator[dict]:
+        yield from self._paginate("GetListedSecuritization/")
+
+    def cris_por_securitizadora(self, cnpj: str) -> Iterator[dict]:
+        yield from self._paginate(
+            "GetListedCertified/",
+            {"dateInitial": "", "cnpj": cnpj, "type": "CRI"},
+        )
+
+    def documentos(
+        self,
+        cnpj_securitizadora: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+    ) -> Iterator[dict]:
+        yield from self._paginate(
+            "GetListedDocumentsTypeHistory/",
+            {
+                "cnpj": cnpj_securitizadora,
+                "dateInitial": start_date.strftime("%Y-%m-%d"),
+                "dateFinal": end_date.strftime("%Y-%m-%d"),
+            },
+        )
+
+    def buscar_cri(
+        self,
+        codigo_if: str,
+        cnpj_securitizadora: Optional[str] = None,
+        incluir_documentos: bool = True,
+    ) -> Optional[CRIInfo]:
+        codigo_if = codigo_if.strip().upper()
+
+        if cnpj_securitizadora:
+            securitizadoras = [{"cnpj": cnpj_securitizadora, "companyName": None}]
+        else:
+            securitizadoras = list(self.securitizadoras())
+
+        for sec in securitizadoras:
+            cnpj = sec.get("cnpj") or sec.get("cnpjFormatado")
+            if not cnpj:
+                continue
+            for cri in self.cris_por_securitizadora(cnpj):
+                if _match_codigo_if(cri, codigo_if):
+                    info = _build_cri_info(cri, sec)
+                    if incluir_documentos:
+                        info.documentos = self._buscar_documentos_do_cri(info)
+                    return info
+        return None
+
+    def _buscar_documentos_do_cri(self, info: CRIInfo) -> list:
+        if not info.cnpj_securitizadora:
+            return []
+        start = _parse_date(info.data_emissao) or datetime.date(2010, 1, 1)
+        end = datetime.date.today()
+        resultado = []
+        for doc in self.documentos(info.cnpj_securitizadora, start, end):
+            if _documento_relacionado(doc, info.codigo_if):
+                resultado.append(_build_documento(doc))
+        return resultado
+
+
+def _match_codigo_if(cri: dict, codigo_if: str) -> bool:
+    candidatos = [
+        cri.get("identificationCode"),
+        cri.get("codigoIF"),
+        cri.get("codigoif"),
+    ]
+    return any(c and c.strip().upper() == codigo_if for c in candidatos)
+
+
+def _build_cri_info(cri: dict, sec: dict) -> CRIInfo:
+    return CRIInfo(
+        codigo_if=cri.get("identificationCode") or cri.get("codigoIF"),
+        cnpj_securitizadora=sec.get("cnpj") or cri.get("cnpj"),
+        nome_securitizadora=sec.get("companyName") or cri.get("companyName"),
+        emissao=str(cri.get("issueNumber") or cri.get("emissao") or "") or None,
+        serie=str(cri.get("serie") or cri.get("series") or "") or None,
+        data_emissao=cri.get("issueDate"),
+        data_vencimento=cri.get("maturityDate") or cri.get("dueDate"),
+        remuneracao=cri.get("remuneration") or cri.get("remuneracao"),
+        valor_nominal=str(cri.get("nominalValue") or cri.get("valorNominal") or "") or None,
+        quantidade=str(cri.get("quantity") or cri.get("quantidade") or "") or None,
+        ativo_lastro=cri.get("backingAsset") or cri.get("ativoLastro"),
+        raw=cri,
+    )
+
+
+def _build_documento(doc: dict) -> Documento:
+    doc_id = doc.get("id") or doc.get("idDocumento")
+    url = None
+    if doc_id:
+        url = f"https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={doc_id}"
+    return Documento(
+        nome=doc.get("name") or doc.get("nome"),
+        tipo=doc.get("typeName") or doc.get("tipoDocumento"),
+        categoria=doc.get("categoryName") or doc.get("categoriaDocumento"),
+        data_entrega=doc.get("submissionDate") or doc.get("dataEntrega"),
+        data_referencia=doc.get("referenceDate") or doc.get("dataReferencia"),
+        url=url,
+        raw=doc,
+    )
+
+
+def _documento_relacionado(doc: dict, codigo_if: Optional[str]) -> bool:
+    if not codigo_if:
+        return True
+    campos_texto = " ".join(
+        str(doc.get(k, "")) for k in ("name", "nome", "description", "descricao", "identificationCode")
+    ).upper()
+    return codigo_if in campos_texto
+
+
+def _parse_date(s: Optional[str]) -> Optional[datetime.date]:
+    if not s:
+        return None
+    texto = s.split("T", 1)[0]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.datetime.strptime(texto, fmt).date()
+        except ValueError:
+            continue
+    return None
