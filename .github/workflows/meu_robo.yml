@@ -3,16 +3,30 @@ name: Consulta CRI (B3)
 on:
   workflow_dispatch:
     inputs:
-      codigo_if:
-        description: "Código IF do CRI (ex.: 19F0076447)"
+      modo:
+        description: "O que fazer"
         required: true
-        type: string
-      cnpj_securitizadora:
-        description: "CNPJ da securitizadora (só dígitos, opcional — acelera a busca)"
+        type: choice
+        default: buscar
+        options:
+          - buscar
+          - listar-securitizadoras
+          - listar-cris
+      codigo_if:
+        description: "Código IF (só no modo 'buscar')"
         required: false
         type: string
+      cnpj_securitizadora:
+        description: "CNPJ securitizadora, só dígitos (exige no 'listar-cris')"
+        required: false
+        type: string
+      limite:
+        description: "Máx de itens no modo listar (0 = todos)"
+        required: false
+        type: string
+        default: "0"
       sem_documentos:
-        description: "Pular busca de documentos FNet"
+        description: "Pular documentos FNet (modo buscar)"
         required: false
         type: boolean
         default: false
@@ -34,23 +48,39 @@ jobs:
       - name: Instalar dependências
         run: pip install -r requirements.txt
 
-      - name: Consultar CRI
+      - name: Executar
         run: |
-          ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.json"
-          if [ -n "${{ inputs.cnpj_securitizadora }}" ]; then
-            ARGS="$ARGS --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }}"
-          fi
-          if [ "${{ inputs.sem_documentos }}" = "true" ]; then
-            ARGS="$ARGS --sem-documentos"
-          fi
+          case "${{ inputs.modo }}" in
+            buscar)
+              ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.json"
+              [ -n "${{ inputs.cnpj_securitizadora }}" ] && ARGS="$ARGS --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }}"
+              [ "${{ inputs.sem_documentos }}" = "true" ] && ARGS="$ARGS --sem-documentos"
+              ;;
+            listar-securitizadoras)
+              ARGS="--listar-securitizadoras --saida resultado.json"
+              ;;
+            listar-cris)
+              ARGS="--listar-cris --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }} --limite ${{ inputs.limite }} --saida resultado.json"
+              ;;
+          esac
+          echo "Executando: python main.py $ARGS"
           python main.py $ARGS
 
       - name: Mostrar resultado no log
-        run: cat resultado.json
+        if: always()
+        run: |
+          if [ -f resultado.json ]; then
+            echo "=== PRIMEIROS 200 LINHAS ==="
+            head -c 50000 resultado.json
+          else
+            echo "resultado.json não gerado."
+          fi
 
       - name: Upload do JSON
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cri-${{ inputs.codigo_if }}
+          name: resultado-${{ inputs.modo }}
           path: resultado.json
           retention-days: 7
+          if-no-files-found: warn
