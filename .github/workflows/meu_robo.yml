@@ -1,34 +1,56 @@
-name: Monitor Vórtx Excel
+name: Consulta CRI (B3)
 
 on:
   workflow_dispatch:
+    inputs:
+      codigo_if:
+        description: "Código IF do CRI (ex.: 19F0076447)"
+        required: true
+        type: string
+      cnpj_securitizadora:
+        description: "CNPJ da securitizadora (só dígitos, opcional — acelera a busca)"
+        required: false
+        type: string
+      sem_documentos:
+        description: "Pular busca de documentos FNet"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  build:
+  consulta:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Baixar código
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
-      - name: Instalar Dependências
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Consultar CRI
         run: |
-          pip install selenium pandas openpyxl undetected-chromedriver
+          ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.json"
+          if [ -n "${{ inputs.cnpj_securitizadora }}" ]; then
+            ARGS="$ARGS --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }}"
+          fi
+          if [ "${{ inputs.sem_documentos }}" = "true" ]; then
+            ARGS="$ARGS --sem-documentos"
+          fi
+          python main.py $ARGS
 
-      - name: Rodar Script de Extração
-        run: python main.py
+      - name: Mostrar resultado no log
+        run: cat resultado.json
 
-      - name: Upload do Arquivo Excel
+      - name: Upload do JSON
         uses: actions/upload-artifact@v4
         with:
-          name: Relatorio_CRI
-          path: |
-            dados_cri_vortx.xlsx
-            *.png
-          retention-days: 5
+          name: cri-${{ inputs.codigo_if }}
+          path: resultado.json
+          retention-days: 7
