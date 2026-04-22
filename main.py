@@ -52,10 +52,15 @@ def main() -> int:
 
     cnpj = _normalizar_cnpj(args.cnpj_securitizadora) if args.cnpj_securitizadora else None
     print(f"Buscando CRI {args.codigo_if}...", file=sys.stderr)
+
+    def _progress(idx, total, nome):
+        print(f"  [{idx}/{total}] {nome}", file=sys.stderr)
+
     info = client.buscar_cri(
         codigo_if=args.codigo_if,
         cnpj_securitizadora=cnpj,
         incluir_documentos=not args.sem_documentos,
+        on_progress=_progress if not cnpj else None,
     )
     if info is None:
         print(f"CRI {args.codigo_if} não encontrado.", file=sys.stderr)

@@ -32,16 +32,15 @@ class Documento:
 @dataclass
 class CRIInfo:
     codigo_if: Optional[str] = None
+    nome: Optional[str] = None
     cnpj_securitizadora: Optional[str] = None
     nome_securitizadora: Optional[str] = None
     emissao: Optional[str] = None
     serie: Optional[str] = None
     data_emissao: Optional[str] = None
-    data_vencimento: Optional[str] = None
-    remuneracao: Optional[str] = None
-    valor_nominal: Optional[str] = None
-    quantidade: Optional[str] = None
-    ativo_lastro: Optional[str] = None
+    devedor: Optional[str] = None
+    descricao: Optional[str] = None
+    fase: Optional[str] = None
     documentos: list = field(default_factory=list)
     raw: dict = field(default_factory=dict)
 
@@ -116,6 +115,7 @@ class B3Client:
         codigo_if: str,
         cnpj_securitizadora: Optional[str] = None,
         incluir_documentos: bool = True,
+        on_progress=None,
     ) -> Optional[CRIInfo]:
         codigo_if = codigo_if.strip().upper()
 
@@ -124,10 +124,13 @@ class B3Client:
         else:
             securitizadoras = list(self.securitizadoras())
 
-        for sec in securitizadoras:
+        for idx, sec in enumerate(securitizadoras, 1):
             cnpj = sec.get("cnpj") or sec.get("cnpjFormatado")
             if not cnpj:
                 continue
+            if on_progress:
+                on_progress(idx, len(securitizadoras),
+                           sec.get("companyName") or cnpj)
             for cri in self.cris_por_securitizadora(cnpj):
                 if _match_codigo_if(cri, codigo_if):
                     info = _build_cri_info(cri, sec)
@@ -158,18 +161,18 @@ def _match_codigo_if(cri: dict, codigo_if: str) -> bool:
 
 
 def _build_cri_info(cri: dict, sec: dict) -> CRIInfo:
+    serials = (cri.get("serials") or "").strip(",")
     return CRIInfo(
-        codigo_if=cri.get("identificationCode") or cri.get("codigoIF"),
+        codigo_if=cri.get("identificationCode"),
+        nome=cri.get("name"),
         cnpj_securitizadora=sec.get("cnpj") or cri.get("cnpj"),
-        nome_securitizadora=sec.get("companyName") or cri.get("companyName"),
-        emissao=str(cri.get("issueNumber") or cri.get("emissao") or "") or None,
-        serie=str(cri.get("serie") or cri.get("series") or "") or None,
+        nome_securitizadora=sec.get("companyName"),
+        emissao=str(cri.get("issueNumber") or "") or None,
+        serie=serials or None,
         data_emissao=cri.get("issueDate"),
-        data_vencimento=cri.get("maturityDate") or cri.get("dueDate"),
-        remuneracao=cri.get("remuneration") or cri.get("remuneracao"),
-        valor_nominal=str(cri.get("nominalValue") or cri.get("valorNominal") or "") or None,
-        quantidade=str(cri.get("quantity") or cri.get("quantidade") or "") or None,
-        ativo_lastro=cri.get("backingAsset") or cri.get("ativoLastro"),
+        devedor=cri.get("debtorName") or None,
+        descricao=cri.get("debtorQualification") or None,
+        fase=cri.get("fase") or None,
         raw=cri,
     )
 
