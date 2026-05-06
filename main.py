@@ -73,6 +73,10 @@ def main() -> int:
 
 
 def _dump(obj, saida) -> int:
+    if saida and saida.lower().endswith(".xlsx"):
+        _dump_excel(obj, saida)
+        print(f"Resultado salvo em {saida}", file=sys.stderr)
+        return 0
     payload = json.dumps(obj, ensure_ascii=False, indent=2, default=str)
     if saida:
         with open(saida, "w", encoding="utf-8") as f:
@@ -81,6 +85,63 @@ def _dump(obj, saida) -> int:
     else:
         print(payload)
     return 0
+
+
+def _dump_excel(obj, path: str) -> None:
+    import openpyxl
+    from openpyxl.styles import Font
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    if isinstance(obj, dict):
+        # Aba Resumo
+        ws = wb.create_sheet("Resumo")
+        campos = [
+            ("Código IF",          "codigo_if"),
+            ("ISIN",               "isin"),
+            ("Securitizadora",     "nome_securitizadora"),
+            ("CNPJ Securitizadora","cnpj_securitizadora"),
+            ("Agente Fiduciário",  "agente_fiduciario"),
+            ("Emissão",            "emissao"),
+            ("Série",              "serie"),
+            ("Data de Emissão",    "data_emissao"),
+            ("Data de Vencimento", "data_vencimento"),
+            ("Remuneração",        "remuneracao"),
+            ("Devedor",            "devedor"),
+            ("Descrição",          "descricao"),
+            ("Fase",               "fase"),
+        ]
+        for i, (label, key) in enumerate(campos, 1):
+            ws.cell(row=i, column=1, value=label).font = Font(bold=True)
+            ws.cell(row=i, column=2, value=obj.get(key))
+        ws.column_dimensions["A"].width = 25
+        ws.column_dimensions["B"].width = 55
+
+        # Aba Documentos
+        docs = obj.get("documentos") or []
+        if docs:
+            wd = wb.create_sheet("Documentos")
+            headers = ["Nome", "Tipo", "Categoria", "Data Entrega", "Data Referência", "URL"]
+            keys    = ["nome", "tipo", "categoria", "data_entrega", "data_referencia", "url"]
+            for col, h in enumerate(headers, 1):
+                wd.cell(row=1, column=col, value=h).font = Font(bold=True)
+            for row, doc in enumerate(docs, 2):
+                for col, k in enumerate(keys, 1):
+                    wd.cell(row=row, column=col, value=doc.get(k))
+            for col in range(1, len(headers) + 1):
+                wd.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 30
+
+    elif isinstance(obj, list) and obj:
+        ws = wb.create_sheet("Dados")
+        headers = list(obj[0].keys())
+        for col, h in enumerate(headers, 1):
+            ws.cell(row=1, column=col, value=h).font = Font(bold=True)
+        for row, item in enumerate(obj, 2):
+            for col, k in enumerate(headers, 1):
+                ws.cell(row=row, column=col, value=str(item.get(k, "") or ""))
+
+    wb.save(path)
 
 
 def _normalizar_cnpj(cnpj: str) -> str:

@@ -52,35 +52,44 @@ jobs:
         run: |
           case "${{ inputs.modo }}" in
             buscar)
-              ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.json"
+              ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.xlsx"
               [ -n "${{ inputs.cnpj_securitizadora }}" ] && ARGS="$ARGS --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }}"
               [ "${{ inputs.sem_documentos }}" = "true" ] && ARGS="$ARGS --sem-documentos"
               ;;
             listar-securitizadoras)
-              ARGS="--listar-securitizadoras --saida resultado.json"
+              ARGS="--listar-securitizadoras --saida resultado.xlsx"
               ;;
             listar-cris)
-              ARGS="--listar-cris --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }} --limite ${{ inputs.limite }} --saida resultado.json"
+              ARGS="--listar-cris --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }} --limite ${{ inputs.limite }} --saida resultado.xlsx"
               ;;
           esac
           echo "Executando: python main.py $ARGS"
           python main.py $ARGS
 
-      - name: Mostrar resultado no log
+      - name: Mostrar resumo no log
         if: always()
         run: |
-          if [ -f resultado.json ]; then
-            echo "=== PRIMEIROS 200 LINHAS ==="
-            head -c 50000 resultado.json
+          if [ -f resultado.xlsx ]; then
+            python print_xlsx.py resultado.xlsx
           else
-            echo "resultado.json não gerado."
+            echo "resultado.xlsx não gerado."
           fi
 
-      - name: Upload do JSON
+      - name: Enviar para Google Drive
+        if: always()
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          if [ -f resultado.xlsx ]; then
+            python upload_drive.py resultado.xlsx
+          fi
+
+      - name: Upload do artefato
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: resultado-${{ inputs.modo }}
-          path: resultado.json
+          path: resultado.xlsx
           retention-days: 7
           if-no-files-found: warn
