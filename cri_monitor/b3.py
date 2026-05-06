@@ -11,6 +11,7 @@ from cri_monitor.securitizadoras import SECURITIZADORAS_CONHECIDAS
 
 
 FUNDS_CALL_URL = "https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/"
+BALCAO_CALL_URL = "https://sistemaswebb3-balcao.b3.com.br/featuresCRIProxy/CriCall/"
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -34,12 +35,16 @@ class Documento:
 @dataclass
 class CRIInfo:
     codigo_if: Optional[str] = None
+    isin: Optional[str] = None
     nome: Optional[str] = None
     cnpj_securitizadora: Optional[str] = None
     nome_securitizadora: Optional[str] = None
+    agente_fiduciario: Optional[str] = None
     emissao: Optional[str] = None
     serie: Optional[str] = None
     data_emissao: Optional[str] = None
+    data_vencimento: Optional[str] = None
+    remuneracao: Optional[str] = None
     devedor: Optional[str] = None
     descricao: Optional[str] = None
     fase: Optional[str] = None
@@ -62,8 +67,8 @@ class B3Client:
         payload = json.dumps(params, separators=(",", ":"))
         return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
-    def _get(self, endpoint: str, params: dict) -> Any:
-        url = urljoin(FUNDS_CALL_URL, endpoint) + self._encode_params(params)
+    def _get(self, base_url: str, endpoint: str, params: dict) -> Any:
+        url = urljoin(base_url, endpoint) + self._encode_params(params)
         response = self.session.get(url, timeout=self.timeout)
         response.raise_for_status()
         return response.json()
@@ -73,7 +78,7 @@ class B3Client:
         params.setdefault("pageNumber", 1)
         params.setdefault("pageSize", 100)
         while True:
-            data = self._get(endpoint, params)
+            data = self._get(FUNDS_CALL_URL, endpoint, params)
             if isinstance(data, list):
                 yield from data
                 return
@@ -115,6 +120,24 @@ class B3Client:
             },
         )
 
+    def buscar_cri_balcao(self, codigo_if: str) -> Optional["CRIInfo"]:
+        """Busca direta pelo código IF no sistema de balcão da B3 (retorna remuneração e vencimento)."""
+        params = {
+            "language": "pt-br",
+            "isinCodeIF": codigo_if,
+            "indexer": "",
+            "pageNumber": 1,
+            "pageSize": 20,
+        }
+        try:
+            data = self._get(BALCAO_CALL_URL, "GetInitialFilter/", params)
+        except Exception:
+            return None
+        results = data.get("results") if isinstance(data, dict) else None
+        if not results:
+            return None
+        return _build_cri_info_balcao(results[0])
+
     def buscar_cri(
         self,
         codigo_if: str,
@@ -124,6 +147,31 @@ class B3Client:
     ) -> Optional[CRIInfo]:
         codigo_if = codigo_if.strip().upper()
 
+        # Tenta balcão primeiro (busca direta, retorna remuneração e vencimento)
+        info = self.buscar_cri_balcao(codigo_if)
+
+        if info is None:
+            # Fallback: busca pelo sistema listados varrendo securitizadoras
+            info = self._buscar_via_listados(codigo_if, cnpj_securitizadora, on_progress)
+
+        if info is None:
+            return None
+
+        # Se CNPJ foi informado explicitamente, usa ele (necessário para documentos)
+        if cnpj_securitizadora and not info.cnpj_securitizadora:
+            info.cnpj_securitizadora = cnpj_securitizadora
+
+        if incluir_documentos and info.cnpj_securitizadora:
+            info.documentos = self._buscar_documentos_do_cri(info)
+
+        return info
+
+    def _buscar_via_listados(
+        self,
+        codigo_if: str,
+        cnpj_securitizadora: Optional[str],
+        on_progress=None,
+    ) -> Optional[CRIInfo]:
         if cnpj_securitizadora:
             securitizadoras = [{"cnpj": cnpj_securitizadora, "companyName": None}]
         else:
@@ -138,13 +186,10 @@ class B3Client:
                 continue
             if on_progress:
                 on_progress(idx, len(securitizadoras),
-                           sec.get("companyName") or cnpj)
+                            sec.get("companyName") or cnpj)
             for cri in self.cris_por_securitizadora(cnpj):
                 if _match_codigo_if(cri, codigo_if):
-                    info = _build_cri_info(cri, sec)
-                    if incluir_documentos:
-                        info.documentos = self._buscar_documentos_do_cri(info)
-                    return info
+                    return _build_cri_info(cri, sec)
         return None
 
     def _buscar_documentos_do_cri(self, info: CRIInfo) -> list:
@@ -160,7 +205,6 @@ class B3Client:
 
 
 def _merge_securitizadoras(da_api: list[dict], conhecidas: list[dict]) -> list[dict]:
-    """Combina a lista da B3 com a lista local, priorizando a da API e sem duplicatas."""
     cnpjs_vistos: set[str] = set()
     merged: list[dict] = []
     for sec in da_api:
@@ -183,6 +227,20 @@ def _match_codigo_if(cri: dict, codigo_if: str) -> bool:
         cri.get("codigoif"),
     ]
     return any(c and c.strip().upper() == codigo_if for c in candidatos)
+
+
+def _build_cri_info_balcao(cri: dict) -> CRIInfo:
+    return CRIInfo(
+        codigo_if=cri.get("codeIF"),
+        isin=cri.get("isin"),
+        nome_securitizadora=cri.get("issuer"),
+        agente_fiduciario=cri.get("trustee"),
+        emissao=str(cri.get("issueNo") or "") or None,
+        serie=str(cri.get("seriesNo") or "") or None,
+        remuneracao=cri.get("revenue"),
+        data_vencimento=cri.get("endDate"),
+        raw=cri,
+    )
 
 
 def _build_cri_info(cri: dict, sec: dict) -> CRIInfo:
