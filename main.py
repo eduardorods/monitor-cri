@@ -30,8 +30,12 @@ def main() -> int:
     client = B3Client()
 
     if args.listar_securitizadoras:
-        print("Listando securitizadoras...", file=sys.stderr)
-        return _dump(list(client.securitizadoras()), args.saida)
+        print("Listando securitizadoras (API B3 + lista local)...", file=sys.stderr)
+        from cri_monitor.securitizadoras import SECURITIZADORAS_CONHECIDAS
+        from cri_monitor.b3 import _merge_securitizadoras
+        merged = _merge_securitizadoras(list(client.securitizadoras()), SECURITIZADORAS_CONHECIDAS)
+        print(f"{len(merged)} securitizadora(s) no total.", file=sys.stderr)
+        return _dump(merged, args.saida)
 
     if args.listar_cris:
         if not args.cnpj_securitizadora:

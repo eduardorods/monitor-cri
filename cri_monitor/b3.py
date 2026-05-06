@@ -7,6 +7,8 @@ from urllib.parse import urljoin
 
 import requests
 
+from cri_monitor.securitizadoras import SECURITIZADORAS_CONHECIDAS
+
 
 FUNDS_CALL_URL = "https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/"
 DEFAULT_HEADERS = {
@@ -86,7 +88,10 @@ class B3Client:
                 yield data
                 return
 
-    def securitizadoras(self) -> Iterator[dict]:
+    def securitizadoras(self, usar_lista_local: bool = False) -> Iterator[dict]:
+        if usar_lista_local:
+            yield from SECURITIZADORAS_CONHECIDAS
+            return
         yield from self._paginate("GetListedSecuritization/")
 
     def cris_por_securitizadora(self, cnpj: str) -> Iterator[dict]:
@@ -122,7 +127,10 @@ class B3Client:
         if cnpj_securitizadora:
             securitizadoras = [{"cnpj": cnpj_securitizadora, "companyName": None}]
         else:
-            securitizadoras = list(self.securitizadoras())
+            securitizadoras = _merge_securitizadoras(
+                list(self.securitizadoras()),
+                SECURITIZADORAS_CONHECIDAS,
+            )
 
         for idx, sec in enumerate(securitizadoras, 1):
             cnpj = sec.get("cnpj") or sec.get("cnpjFormatado")
@@ -149,6 +157,23 @@ class B3Client:
             if _documento_relacionado(doc, info.codigo_if):
                 resultado.append(_build_documento(doc))
         return resultado
+
+
+def _merge_securitizadoras(da_api: list[dict], conhecidas: list[dict]) -> list[dict]:
+    """Combina a lista da B3 com a lista local, priorizando a da API e sem duplicatas."""
+    cnpjs_vistos: set[str] = set()
+    merged: list[dict] = []
+    for sec in da_api:
+        cnpj = (sec.get("cnpj") or "").replace(".", "").replace("/", "").replace("-", "")
+        if cnpj and cnpj not in cnpjs_vistos:
+            cnpjs_vistos.add(cnpj)
+            merged.append(sec)
+    for sec in conhecidas:
+        cnpj = (sec.get("cnpj") or "").replace(".", "").replace("/", "").replace("-", "")
+        if cnpj and cnpj not in cnpjs_vistos:
+            cnpjs_vistos.add(cnpj)
+            merged.append(sec)
+    return merged
 
 
 def _match_codigo_if(cri: dict, codigo_if: str) -> bool:
