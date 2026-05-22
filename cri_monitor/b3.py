@@ -1,6 +1,7 @@
 import base64
 import datetime
 import json
+import sys
 from dataclasses import dataclass, field, asdict
 from typing import Any, Iterator, Optional
 from urllib.parse import urljoin
@@ -214,11 +215,27 @@ class B3Client:
             return []
         start = _parse_date(info.data_emissao) or datetime.date(2010, 1, 1)
         end = datetime.date.today()
-        resultado = []
+
+        todos: list[Documento] = []
+        por_codigo: list[Documento] = []
+
         for doc in self.documentos(info.cnpj_securitizadora, start, end):
-            if _documento_relacionado(doc, info.codigo_if):
-                resultado.append(_build_documento(doc))
-        return resultado
+            built = _build_documento(doc)
+            todos.append(built)
+            if _documento_relacionado(doc, info.codigo_if, info.isin):
+                por_codigo.append(built)
+
+        if por_codigo:
+            print(f"  {len(por_codigo)} documento(s) associado(s) ao CRI por código/ISIN.",
+                  file=sys.stderr)
+            return por_codigo
+
+        # FNet não associa IF code ao documento: inclui todos da securitizadora no período.
+        # O filtro por categoria_normalizada no download limita o que é baixado.
+        print(f"  Nenhum doc com código IF/ISIN encontrado; incluindo todos os "
+              f"{len(todos)} da securitizadora (filtro por categoria no download).",
+              file=sys.stderr)
+        return todos
 
 
 def _merge_securitizadoras(da_api: list[dict], conhecidas: list[dict]) -> list[dict]:
@@ -307,13 +324,21 @@ def _categorizar(*campos: Optional[str]) -> Optional[str]:
     return None
 
 
-def _documento_relacionado(doc: dict, codigo_if: Optional[str]) -> bool:
-    if not codigo_if:
+def _documento_relacionado(
+    doc: dict,
+    codigo_if: Optional[str],
+    isin: Optional[str] = None,
+) -> bool:
+    if not codigo_if and not isin:
         return True
     campos_texto = " ".join(
         str(doc.get(k, "")) for k in ("name", "nome", "description", "descricao", "identificationCode")
     ).upper()
-    return codigo_if in campos_texto
+    if codigo_if and codigo_if.upper() in campos_texto:
+        return True
+    if isin and isin.upper() in campos_texto:
+        return True
+    return False
 
 
 def _parse_date(s: Optional[str]) -> Optional[datetime.date]:
