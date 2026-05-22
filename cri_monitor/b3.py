@@ -7,7 +7,19 @@ from urllib.parse import urljoin
 
 import requests
 
-from cri_monitor.securitizadoras import SECURITIZADORAS_CONHECIDAS
+from cri_monitor.securitizadoras import (
+    SECURITIZADORAS_CONHECIDAS,
+    encontrar_cnpj_por_nome,
+)
+
+
+CATEGORIAS_DOCUMENTO = {
+    "termo_securitizacao": ["termo de securitiza"],
+    "aditamento": ["aditamento", "aditivo"],
+    "ata_assembleia": ["ata", "assembleia"],
+    "relatorio_agente_fiduciario": ["relatório do agente", "relatorio do agente",
+                                    "relatório anual do agente", "relatório do trustee"],
+}
 
 
 FUNDS_CALL_URL = "https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/"
@@ -26,6 +38,7 @@ class Documento:
     nome: Optional[str] = None
     tipo: Optional[str] = None
     categoria: Optional[str] = None
+    categoria_normalizada: Optional[str] = None
     data_entrega: Optional[str] = None
     data_referencia: Optional[str] = None
     url: Optional[str] = None
@@ -161,6 +174,10 @@ class B3Client:
         if cnpj_securitizadora and not info.cnpj_securitizadora:
             info.cnpj_securitizadora = cnpj_securitizadora
 
+        # Tenta resolver CNPJ a partir do nome da securitizadora (balcão não retorna CNPJ)
+        if not info.cnpj_securitizadora and info.nome_securitizadora:
+            info.cnpj_securitizadora = encontrar_cnpj_por_nome(info.nome_securitizadora)
+
         if incluir_documentos and info.cnpj_securitizadora:
             info.documentos = self._buscar_documentos_do_cri(info)
 
@@ -265,15 +282,29 @@ def _build_documento(doc: dict) -> Documento:
     url = None
     if doc_id:
         url = f"https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={doc_id}"
+    tipo = doc.get("typeName") or doc.get("tipoDocumento")
+    nome = doc.get("name") or doc.get("nome")
+    categoria = doc.get("categoryName") or doc.get("categoriaDocumento")
     return Documento(
-        nome=doc.get("name") or doc.get("nome"),
-        tipo=doc.get("typeName") or doc.get("tipoDocumento"),
-        categoria=doc.get("categoryName") or doc.get("categoriaDocumento"),
+        nome=nome,
+        tipo=tipo,
+        categoria=categoria,
+        categoria_normalizada=_categorizar(nome, tipo, categoria),
         data_entrega=doc.get("submissionDate") or doc.get("dataEntrega"),
         data_referencia=doc.get("referenceDate") or doc.get("dataReferencia"),
         url=url,
         raw=doc,
     )
+
+
+def _categorizar(*campos: Optional[str]) -> Optional[str]:
+    texto = " ".join(c for c in campos if c).lower()
+    if not texto:
+        return None
+    for chave, marcadores in CATEGORIAS_DOCUMENTO.items():
+        if any(m in texto for m in marcadores):
+            return chave
+    return None
 
 
 def _documento_relacionado(doc: dict, codigo_if: Optional[str]) -> bool:
