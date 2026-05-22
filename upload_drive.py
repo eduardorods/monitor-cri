@@ -5,16 +5,15 @@ Uso:
     python upload_drive.py <caminho1> [<caminho2> ...] --subpasta CRIs/22I1560033
 
 Variáveis de ambiente obrigatórias:
-    GOOGLE_DRIVE_FOLDER_ID — ID da pasta raiz no Google Drive
-
-Autenticação: usa Application Default Credentials (ADC).
-No GitHub Actions, configure o step google-github-actions/auth antes de chamar este script.
+    GOOGLE_DRIVE_FOLDER_ID  — ID da pasta raiz no Drive
+    GOOGLE_CLIENT_ID        — OAuth 2.0 Client ID
+    GOOGLE_CLIENT_SECRET    — OAuth 2.0 Client Secret
+    GOOGLE_REFRESH_TOKEN    — OAuth 2.0 Refresh Token (gerado por get_drive_token.py)
 """
 import argparse
 import os
 from typing import Optional
 
-import google.auth
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -24,10 +23,22 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
 def _service():
-    try:
-        credentials, _ = google.auth.default(scopes=SCOPES)
-    except google.auth.exceptions.DefaultCredentialsError:
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
+
+    if not (client_id and client_secret and refresh_token):
         return None
+
+    from google.oauth2.credentials import Credentials
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=SCOPES,
+    )
     return build("drive", "v3", credentials=credentials)
 
 
@@ -62,7 +73,7 @@ def upload(caminhos: list[str], subpasta: Optional[str] = None) -> list[str]:
     service = _service()
     base_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
     if service is None or not base_id:
-        print("Credenciais ADC ou GOOGLE_DRIVE_FOLDER_ID não configurados. Pulando upload.",
+        print("Credenciais OAuth ou GOOGLE_DRIVE_FOLDER_ID não configurados. Pulando upload.",
               flush=True)
         return []
 

@@ -215,6 +215,8 @@ class B3Client:
             return []
         start = _parse_date(info.data_emissao) or datetime.date(2010, 1, 1)
         end = datetime.date.today()
+        print(f"  FNet: CNPJ={info.cnpj_securitizadora} período={start} a {end} "
+              f"(IF={info.codigo_if} ISIN={info.isin})", file=sys.stderr)
 
         todos: list[Documento] = []
         por_codigo: list[Documento] = []
