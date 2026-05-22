@@ -102,23 +102,44 @@ def main() -> int:
 
 
 def _baixar_e_analisar(info, dir_destino: str):
-    """Baixa PDFs das categorias relevantes e parseia o Termo de Securitização."""
+    """Baixa PDFs das categorias relevantes e parseia o Termo de Securitização.
+
+    Limites por categoria (evita baixar dezenas de relatórios):
+    - termo_securitizacao: 1
+    - aditamento: 5 mais recentes
+    - ata_assembleia: 5 mais recentes
+    - relatorio_agente_fiduciario: 3 mais recentes
+    """
+    LIMITE_CATEGORIA = {
+        "termo_securitizacao": 1,
+        "aditamento": 5,
+        "ata_assembleia": 5,
+        "relatorio_agente_fiduciario": 3,
+    }
     alvo_dir = os.path.join(dir_destino, info.codigo_if or "cri")
     print(f"Baixando PDFs para {alvo_dir}...", file=sys.stderr)
+    print(f"  Total de documentos disponíveis: {len(info.documentos)}", file=sys.stderr)
 
+    contagem: dict[str, int] = {}
     pdfs_baixados: list[str] = []
     caminho_termo: Optional[str] = None
+
     for i, doc in enumerate(info.documentos, 1):
-        if doc.categoria_normalizada not in CATEGORIAS_BAIXAR_DEFAULT:
+        cat = doc.categoria_normalizada
+        if cat not in CATEGORIAS_BAIXAR_DEFAULT:
             continue
         if not doc.url:
             continue
-        nome_base = f"{i:03d}_{(doc.categoria_normalizada or 'doc')}_{(doc.nome or 'doc')}"
+        limite = LIMITE_CATEGORIA.get(cat, 3)
+        if contagem.get(cat, 0) >= limite:
+            continue
+        contagem[cat] = contagem.get(cat, 0) + 1
+        nome_base = f"{i:03d}_{(cat or 'doc')}_{(doc.nome or 'doc')}"
         caminho = baixar_documento(doc.url, alvo_dir, nome_base)
         if caminho:
-            print(f"  Baixado: {os.path.basename(caminho)}", file=sys.stderr)
+            print(f"  [{cat}] Baixado: {os.path.basename(caminho)}", file=sys.stderr)
             pdfs_baixados.append(caminho)
-            if doc.categoria_normalizada == "termo_securitizacao" and not caminho_termo:
+            if cat == "termo_securitizacao" and not caminho_termo:
                 caminho_termo = caminho
 
     resumo: Optional[ResumoOperacao] = None
