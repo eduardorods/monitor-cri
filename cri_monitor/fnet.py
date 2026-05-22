@@ -21,16 +21,22 @@ def _slugify(nome: str, max_len: int = 80) -> str:
 
 
 def baixar_documento(url: str, dir_destino: str, nome_base: str,
-                     timeout: int = 60) -> Optional[str]:
+                     timeout: int = 120) -> Optional[str]:
     """Baixa um documento (geralmente PDF) do FNet e salva em disco.
     Retorna o caminho do arquivo salvo, ou None se falhar.
     """
     os.makedirs(dir_destino, exist_ok=True)
-    try:
-        resp = requests.get(url, headers=FNET_HEADERS, timeout=timeout, allow_redirects=True)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"  Falha ao baixar {url}: {e}")
+    for tentativa in range(2):
+        try:
+            resp = requests.get(url, headers=FNET_HEADERS, timeout=timeout, allow_redirects=True)
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            if tentativa == 1:
+                print(f"  Falha ao baixar {url}: {e}")
+                return None
+            print(f"  Retry após falha: {e}")
+    else:
         return None
 
     extensao = ".pdf"
