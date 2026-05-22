@@ -100,3 +100,59 @@ def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
         serie_unica=data.get("serie_unica"),
         series=data.get("series") or [],
     )
+
+
+_PROMPT_ATA = """Você está analisando uma Ata de Assembleia de Debenturistas/CRI (Certificado de Recebíveis Imobiliários) brasileira.
+
+Extraia as informações abaixo e retorne em JSON. Se um campo não estiver presente, use null.
+
+- data_assembleia: data em que a assembleia foi realizada, formato DD/MM/AAAA
+- tipo_assembleia: tipo (ex: "Assembleia Geral Ordinária", "Assembleia Geral Extraordinária", "Assembleia Especial")
+- deliberacoes: texto corrido (até 600 caracteres) descrevendo as principais deliberações e decisões tomadas na assembleia. Seja objetivo e inclua o resultado de cada votação relevante (aprovado, rejeitado, aprovado por maioria, etc.).
+
+Texto da Ata:
+
+\"\"\"
+{texto}
+\"\"\"
+
+Retorne APENAS o JSON, sem comentários ou texto adicional."""
+
+
+def analisar_ata_com_gemini(texto: str, nome_arquivo: str,
+                            api_key: Optional[str] = None,
+                            max_chars: int = 100_000) -> Optional[dict]:
+    """Analisa uma ata de assembleia. Retorna dict com data, tipo e deliberações."""
+    api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key or not texto:
+        return None
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return None
+
+    prompt = _PROMPT_ATA.format(texto=texto[:max_chars])
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
+        )
+        data = json.loads(response.text)
+    except Exception as e:
+        print(f"  Erro no Gemini ao analisar ata: {e}", file=sys.stderr)
+        return None
+
+    return {
+        "arquivo": nome_arquivo,
+        "data_assembleia": data.get("data_assembleia"),
+        "tipo_assembleia": data.get("tipo_assembleia"),
+        "deliberacoes": data.get("deliberacoes"),
+    }

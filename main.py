@@ -8,7 +8,7 @@ from typing import Optional
 from cri_monitor import B3Client
 from cri_monitor.fnet import baixar_documento
 from cri_monitor.pdf_parser import ResumoOperacao, analisar, extrair_texto
-from cri_monitor.gemini_parser import analisar_com_gemini
+from cri_monitor.gemini_parser import analisar_ata_com_gemini, analisar_com_gemini
 
 
 CATEGORIAS_BAIXAR_DEFAULT = (
@@ -90,7 +90,7 @@ def main() -> int:
     pdfs_baixados: list[str] = []
 
     if args.baixar_pdfs and info.documentos:
-        pdfs_baixados, resumo = _baixar_e_analisar(info, args.baixar_pdfs)
+        pdfs_baixados, resumo, atas_analisadas = _baixar_e_analisar(info, args.baixar_pdfs)
         _preencher_lacunas(info, resumo)
 
     payload = info.to_dict()
@@ -98,6 +98,8 @@ def main() -> int:
         payload["resumo_operacao"] = asdict(resumo)
     if pdfs_baixados:
         payload["pdfs_baixados"] = pdfs_baixados
+    if atas_analisadas:
+        payload["atas_analisadas"] = atas_analisadas
 
     return _dump(payload, args.saida)
 
@@ -124,6 +126,7 @@ def _baixar_e_analisar(info, dir_destino: str):
     contagem: dict[str, int] = {}
     pdfs_baixados: list[str] = []
     caminho_termo: Optional[str] = None
+    caminhos_atas: list[str] = []
 
     for i, doc in enumerate(info.documentos, 1):
         cat = doc.categoria_normalizada
@@ -142,6 +145,8 @@ def _baixar_e_analisar(info, dir_destino: str):
             pdfs_baixados.append(caminho)
             if cat == "termo_securitizacao" and not caminho_termo:
                 caminho_termo = caminho
+            elif cat == "ata_assembleia":
+                caminhos_atas.append(caminho)
 
     resumo: Optional[ResumoOperacao] = None
     if caminho_termo:
@@ -157,7 +162,18 @@ def _baixar_e_analisar(info, dir_destino: str):
                   file=sys.stderr)
             resumo = analisar(texto)
 
-    return pdfs_baixados, resumo
+    atas_analisadas: list[dict] = []
+    if os.environ.get("GOOGLE_API_KEY") and caminhos_atas:
+        print(f"Analisando {len(caminhos_atas)} ata(s) com Gemini...", file=sys.stderr)
+        for caminho_ata in caminhos_atas:
+            nome = os.path.basename(caminho_ata)
+            print(f"  Ata: {nome}", file=sys.stderr)
+            texto_ata = extrair_texto(caminho_ata, max_paginas=30)
+            resultado = analisar_ata_com_gemini(texto_ata, nome)
+            if resultado:
+                atas_analisadas.append(resultado)
+
+    return pdfs_baixados, resumo, atas_analisadas
 
 
 def _preencher_lacunas(info, resumo: Optional[ResumoOperacao]) -> None:
@@ -321,6 +337,25 @@ def _dump_excel(obj, path: str) -> None:
                         wc.cell(row=row_num, column=col, value=row_data.get(k))
             for col in range(1, len(headers) + 1):
                 wc.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
+
+        # Aba Atas de Assembleia
+        atas = obj.get("atas_analisadas") or []
+        if atas:
+            wa = wb.create_sheet("Atas de Assembleia")
+            headers_atas = ["Data", "Tipo", "Arquivo", "Deliberações"]
+            keys_atas = ["data_assembleia", "tipo_assembleia", "arquivo", "deliberacoes"]
+            for col, h in enumerate(headers_atas, 1):
+                wa.cell(row=1, column=col, value=h).font = Font(bold=True)
+            for row_num, ata in enumerate(atas, 2):
+                for col, k in enumerate(keys_atas, 1):
+                    cell = wa.cell(row=row_num, column=col, value=ata.get(k))
+                    if k == "deliberacoes":
+                        cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+                        wa.row_dimensions[row_num].height = 80
+            wa.column_dimensions["A"].width = 15
+            wa.column_dimensions["B"].width = 30
+            wa.column_dimensions["C"].width = 35
+            wa.column_dimensions["D"].width = 80
 
         # Aba Documentos
         docs = obj.get("documentos") or []
