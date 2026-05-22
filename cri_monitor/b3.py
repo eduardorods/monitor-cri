@@ -25,6 +25,7 @@ CATEGORIAS_DOCUMENTO = {
 
 FUNDS_CALL_URL = "https://sistemaswebb3-listados.b3.com.br/fundsProxy/fundsCall/"
 BALCAO_CALL_URL = "https://sistemaswebb3-balcao.b3.com.br/featuresCRIProxy/CriCall/"
+FNET_BASE_URL = "https://fnet.bmfbovespa.com.br/fnet/publico/"
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -119,21 +120,6 @@ class B3Client:
             {"dateInitial": "", "cnpj": cnpj, "type": "CRI"},
         )
 
-    def documentos(
-        self,
-        cnpj_securitizadora: str,
-        start_date: datetime.date,
-        end_date: datetime.date,
-    ) -> Iterator[dict]:
-        yield from self._paginate(
-            "GetListedDocumentsTypeHistory/",
-            {
-                "cnpj": cnpj_securitizadora,
-                "dateInitial": start_date.strftime("%Y-%m-%d"),
-                "dateFinal": end_date.strftime("%Y-%m-%d"),
-            },
-        )
-
     def buscar_cri_balcao(self, codigo_if: str) -> Optional["CRIInfo"]:
         """Busca direta pelo código IF no sistema de balcão da B3 (retorna remuneração e vencimento)."""
         params = {
@@ -151,6 +137,59 @@ class B3Client:
         if not results:
             return None
         return _build_cri_info_balcao(results[0])
+
+    def _buscar_id_fundo_fnet(self, isin: str) -> Optional[int]:
+        """Resolve ISIN → idFundo interno do FNet (sistema CVM de certificados)."""
+        try:
+            resp = self.session.get(
+                FNET_BASE_URL + "listarFundos",
+                params={"term": isin, "page": 1, "idTipoFundo": 0,
+                        "idAdm": 0, "paraCerts": "true"},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data if isinstance(data, list) else data.get("results", [])
+            if items:
+                return items[0].get("id")
+        except Exception:
+            pass
+        return None
+
+    def _documentos_fnet_cvm(self, id_fundo: int) -> Iterator[dict]:
+        """Busca documentos no sistema FNet/CVM pelo idFundo, com paginação."""
+        start = 0
+        page_size = 100
+        while True:
+            params = {
+                "d": 1,
+                "s": start,
+                "l": page_size,
+                "o[0][dataEntrega]": "desc",
+                "idFundo": id_fundo,
+                "idCategoriaDocumento": 0,
+                "idTipoDocumento": 0,
+                "idEspecieDocumento": 0,
+                "paginaCertificados": "true",
+                "isSession": "false",
+            }
+            try:
+                resp = self.session.get(
+                    FNET_BASE_URL + "pesquisarGerenciadorDocumentosDados",
+                    params=params,
+                    timeout=self.timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                print(f"  Erro ao buscar docs FNet: {e}", file=sys.stderr)
+                return
+            items = data.get("data", [])
+            yield from items
+            total = data.get("recordsTotal", 0)
+            start += page_size
+            if start >= total or not items:
+                return
 
     def buscar_cri(
         self,
@@ -171,7 +210,7 @@ class B3Client:
         if info is None:
             return None
 
-        # Se CNPJ foi informado explicitamente, usa ele (necessário para documentos)
+        # Se CNPJ foi informado explicitamente, usa ele
         if cnpj_securitizadora and not info.cnpj_securitizadora:
             info.cnpj_securitizadora = cnpj_securitizadora
 
@@ -179,7 +218,7 @@ class B3Client:
         if not info.cnpj_securitizadora and info.nome_securitizadora:
             info.cnpj_securitizadora = encontrar_cnpj_por_nome(info.nome_securitizadora)
 
-        if incluir_documentos and info.cnpj_securitizadora:
+        if incluir_documentos:
             info.documentos = self._buscar_documentos_do_cri(info)
 
         return info
@@ -211,46 +250,54 @@ class B3Client:
         return None
 
     def _buscar_documentos_do_cri(self, info: CRIInfo) -> list:
+        # Busca via FNet/CVM por ISIN (API correta para CRI)
+        if info.isin:
+            print(f"  FNet CVM: buscando idFundo para ISIN={info.isin}...", file=sys.stderr)
+            id_fundo = self._buscar_id_fundo_fnet(info.isin)
+            if id_fundo:
+                print(f"  FNet CVM: idFundo={id_fundo}, buscando documentos...", file=sys.stderr)
+                docs = [_build_documento_fnet(d) for d in self._documentos_fnet_cvm(id_fundo)]
+                print(f"  FNet CVM: {len(docs)} documento(s) encontrado(s).", file=sys.stderr)
+                return docs
+            else:
+                print(f"  FNet CVM: idFundo não encontrado para ISIN={info.isin}.", file=sys.stderr)
+
+        # Fallback: GetListedDocumentsTypeHistory por CNPJ
         if not info.cnpj_securitizadora:
             return []
         start = _parse_date(info.data_emissao) or datetime.date(2010, 1, 1)
         end = datetime.date.today()
-
-        # Tenta CNPJ sem formatação e, se retornar 0, tenta com formatação
-        cnpjs_tentar = [info.cnpj_securitizadora]
-        formatado = _formatar_cnpj(info.cnpj_securitizadora)
-        if formatado != info.cnpj_securitizadora:
-            cnpjs_tentar.append(formatado)
+        print(f"  FNet fallback: CNPJ={info.cnpj_securitizadora} período={start} a {end}",
+              file=sys.stderr)
 
         todos: list[Documento] = []
         por_codigo: list[Documento] = []
-
-        for cnpj in cnpjs_tentar:
-            print(f"  FNet: CNPJ={cnpj} período={start} a {end} "
-                  f"(IF={info.codigo_if} ISIN={info.isin})", file=sys.stderr)
-            todos = []
-            por_codigo = []
-            for doc in self.documentos(cnpj, start, end):
-                built = _build_documento(doc)
-                todos.append(built)
-                if _documento_relacionado(doc, info.codigo_if, info.isin):
-                    por_codigo.append(built)
-            if todos:
-                print(f"  {len(todos)} documento(s) encontrado(s) com CNPJ={cnpj}.", file=sys.stderr)
-                break
-            print(f"  0 documentos com CNPJ={cnpj}, tentando próximo formato...", file=sys.stderr)
+        for doc in self._documentos_por_cnpj(info.cnpj_securitizadora, start, end):
+            built = _build_documento(doc)
+            todos.append(built)
+            if _documento_relacionado(doc, info.codigo_if, info.isin):
+                por_codigo.append(built)
 
         if por_codigo:
-            print(f"  {len(por_codigo)} documento(s) associado(s) ao CRI por código/ISIN.",
-                  file=sys.stderr)
             return por_codigo
-
-        # FNet não associa IF code ao documento: inclui todos da securitizadora no período.
-        # O filtro por categoria_normalizada no download limita o que é baixado.
-        print(f"  Nenhum doc com código IF/ISIN encontrado; incluindo todos os "
-              f"{len(todos)} da securitizadora (filtro por categoria no download).",
+        print(f"  FNet fallback: {len(todos)} doc(s) da securitizadora (sem match por código).",
               file=sys.stderr)
         return todos
+
+    def _documentos_por_cnpj(
+        self,
+        cnpj_securitizadora: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+    ) -> Iterator[dict]:
+        yield from self._paginate(
+            "GetListedDocumentsTypeHistory/",
+            {
+                "cnpj": cnpj_securitizadora,
+                "dateInitial": start_date.strftime("%Y-%m-%d"),
+                "dateFinal": end_date.strftime("%Y-%m-%d"),
+            },
+        )
 
 
 def _merge_securitizadoras(da_api: list[dict], conhecidas: list[dict]) -> list[dict]:
@@ -309,11 +356,35 @@ def _build_cri_info(cri: dict, sec: dict) -> CRIInfo:
     )
 
 
+def _build_documento_fnet(doc: dict) -> Documento:
+    """Constrói Documento a partir da resposta do FNet CVM (pesquisarGerenciadorDocumentosDados)."""
+    doc_id = doc.get("id") or doc.get("idDocumento")
+    url = None
+    if doc_id:
+        url = f"{FNET_BASE_URL}downloadDocumento?id={doc_id}&cvm=true"
+    nome = (doc.get("descricao") or doc.get("nomeDocumento") or
+            doc.get("nome") or doc.get("name"))
+    tipo = (doc.get("tipoDocumento") or doc.get("tipo") or
+            doc.get("typeName"))
+    categoria = (doc.get("categoriaDocumento") or doc.get("categoria") or
+                 doc.get("categoryName"))
+    return Documento(
+        nome=nome,
+        tipo=tipo,
+        categoria=categoria,
+        categoria_normalizada=_categorizar(nome, tipo, categoria),
+        data_entrega=doc.get("dataEntrega") or doc.get("submissionDate"),
+        data_referencia=doc.get("dataReferencia") or doc.get("referenceDate"),
+        url=url,
+        raw=doc,
+    )
+
+
 def _build_documento(doc: dict) -> Documento:
     doc_id = doc.get("id") or doc.get("idDocumento")
     url = None
     if doc_id:
-        url = f"https://fnet.bmfbovespa.com.br/fnet/publico/downloadDocumento?id={doc_id}"
+        url = f"{FNET_BASE_URL}downloadDocumento?id={doc_id}"
     tipo = doc.get("typeName") or doc.get("tipoDocumento")
     nome = doc.get("name") or doc.get("nome")
     categoria = doc.get("categoryName") or doc.get("categoriaDocumento")
