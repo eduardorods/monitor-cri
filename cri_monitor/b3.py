@@ -215,17 +215,30 @@ class B3Client:
             return []
         start = _parse_date(info.data_emissao) or datetime.date(2010, 1, 1)
         end = datetime.date.today()
-        print(f"  FNet: CNPJ={info.cnpj_securitizadora} período={start} a {end} "
-              f"(IF={info.codigo_if} ISIN={info.isin})", file=sys.stderr)
+
+        # Tenta CNPJ sem formatação e, se retornar 0, tenta com formatação
+        cnpjs_tentar = [info.cnpj_securitizadora]
+        formatado = _formatar_cnpj(info.cnpj_securitizadora)
+        if formatado != info.cnpj_securitizadora:
+            cnpjs_tentar.append(formatado)
 
         todos: list[Documento] = []
         por_codigo: list[Documento] = []
 
-        for doc in self.documentos(info.cnpj_securitizadora, start, end):
-            built = _build_documento(doc)
-            todos.append(built)
-            if _documento_relacionado(doc, info.codigo_if, info.isin):
-                por_codigo.append(built)
+        for cnpj in cnpjs_tentar:
+            print(f"  FNet: CNPJ={cnpj} período={start} a {end} "
+                  f"(IF={info.codigo_if} ISIN={info.isin})", file=sys.stderr)
+            todos = []
+            por_codigo = []
+            for doc in self.documentos(cnpj, start, end):
+                built = _build_documento(doc)
+                todos.append(built)
+                if _documento_relacionado(doc, info.codigo_if, info.isin):
+                    por_codigo.append(built)
+            if todos:
+                print(f"  {len(todos)} documento(s) encontrado(s) com CNPJ={cnpj}.", file=sys.stderr)
+                break
+            print(f"  0 documentos com CNPJ={cnpj}, tentando próximo formato...", file=sys.stderr)
 
         if por_codigo:
             print(f"  {len(por_codigo)} documento(s) associado(s) ao CRI por código/ISIN.",
@@ -341,6 +354,13 @@ def _documento_relacionado(
     if isin and isin.upper() in campos_texto:
         return True
     return False
+
+
+def _formatar_cnpj(cnpj: str) -> str:
+    d = "".join(c for c in cnpj if c.isdigit())
+    if len(d) == 14:
+        return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:]}"
+    return cnpj
 
 
 def _parse_date(s: Optional[str]) -> Optional[datetime.date]:
