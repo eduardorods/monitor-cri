@@ -17,6 +17,11 @@ class ResumoOperacao:
     garantias: list = field(default_factory=list)
     coordenador_lider: Optional[str] = None
     agente_fiduciario: Optional[str] = None
+    # campos detalhados (preenchidos pelo Gemini)
+    cronograma_descricao: Optional[str] = None
+    garantias_detalhadas: Optional[str] = None
+    covenants: list = field(default_factory=list)
+    tabela_cronograma: list = field(default_factory=list)
 
 
 def extrair_texto(caminho_pdf: str, max_paginas: int = 80) -> str:

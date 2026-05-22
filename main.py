@@ -224,25 +224,75 @@ def _dump_excel(obj, path: str) -> None:
         if resumo:
             wo = wb.create_sheet("Resumo da Operação")
             ordem = [
-                ("Devedor",            "devedor"),
-                ("CNPJ do Devedor",    "cnpj_devedor"),
-                ("Valor Total",        "valor_total"),
-                ("Data de Emissão",    "data_emissao"),
-                ("Data de Vencimento", "data_vencimento"),
-                ("Taxa / Remuneração", "taxa_remuneracao"),
-                ("Índice",             "indice_atualizacao"),
-                ("Coordenador Líder",  "coordenador_lider"),
-                ("Agente Fiduciário",  "agente_fiduciario"),
-                ("Lastro",             "lastro"),
+                ("Devedor",                   "devedor"),
+                ("CNPJ do Devedor",           "cnpj_devedor"),
+                ("Valor Total",               "valor_total"),
+                ("Data de Emissão",           "data_emissao"),
+                ("Data de Vencimento",        "data_vencimento"),
+                ("Taxa / Remuneração",        "taxa_remuneracao"),
+                ("Índice",                    "indice_atualizacao"),
+                ("Coordenador Líder",         "coordenador_lider"),
+                ("Agente Fiduciário",         "agente_fiduciario"),
+                ("Lastro",                    "lastro"),
+                ("Cronograma de Pagamentos",  "cronograma_descricao"),
+                ("Garantias (resumo)",        None),
+                ("Garantias (detalhadas)",    "garantias_detalhadas"),
             ]
-            for i, (label, key) in enumerate(ordem, 1):
-                wo.cell(row=i, column=1, value=label).font = Font(bold=True)
-                wo.cell(row=i, column=2, value=resumo.get(key))
-            garantias = resumo.get("garantias") or []
-            wo.cell(row=len(ordem) + 1, column=1, value="Garantias").font = Font(bold=True)
-            wo.cell(row=len(ordem) + 1, column=2, value=", ".join(garantias) if garantias else None)
-            wo.column_dimensions["A"].width = 25
-            wo.column_dimensions["B"].width = 70
+            row_idx = 1
+            for label, key in ordem:
+                wo.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
+                if key == "garantias_detalhadas":
+                    cell = wo.cell(row=row_idx, column=2, value=resumo.get(key))
+                    cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+                elif key == "cronograma_descricao":
+                    cell = wo.cell(row=row_idx, column=2, value=resumo.get(key))
+                    cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+                elif key is None:
+                    garantias = resumo.get("garantias") or []
+                    wo.cell(row=row_idx, column=2,
+                            value=", ".join(garantias) if garantias else None)
+                else:
+                    wo.cell(row=row_idx, column=2, value=resumo.get(key))
+                row_idx += 1
+
+            covenants = resumo.get("covenants") or []
+            if covenants:
+                wo.cell(row=row_idx, column=1, value="Covenants").font = Font(bold=True)
+                cell = wo.cell(row=row_idx, column=2, value="\n".join(covenants))
+                cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+
+            wo.column_dimensions["A"].width = 28
+            wo.column_dimensions["B"].width = 80
+            for r in range(1, row_idx + 2):
+                wo.row_dimensions[r].height = None  # auto
+
+        # Aba Cronograma (tabela de pagamentos extraída do Termo)
+        tabela = (resumo or {}).get("tabela_cronograma") or []
+        if tabela and isinstance(tabela, list) and len(tabela) > 0:
+            wc = wb.create_sheet("Cronograma")
+            all_keys = []
+            for row in tabela:
+                if isinstance(row, dict):
+                    for k in row.keys():
+                        if k not in all_keys:
+                            all_keys.append(k)
+            header_labels = {
+                "data": "Data",
+                "evento": "Evento",
+                "percentual_amortizacao": "Amortização %",
+                "valor_parcela": "Valor Parcela",
+                "saldo_devedor": "Saldo Devedor",
+                "observacao": "Observação",
+            }
+            headers = [header_labels.get(k, k) for k in all_keys]
+            for col, h in enumerate(headers, 1):
+                wc.cell(row=1, column=col, value=h).font = Font(bold=True)
+            for row_num, row_data in enumerate(tabela, 2):
+                if isinstance(row_data, dict):
+                    for col, k in enumerate(all_keys, 1):
+                        wc.cell(row=row_num, column=col, value=row_data.get(k))
+            for col in range(1, len(headers) + 1):
+                wc.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 20
 
         # Aba Documentos
         docs = obj.get("documentos") or []
