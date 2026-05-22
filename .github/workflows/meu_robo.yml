@@ -35,6 +35,9 @@ jobs:
   consulta:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write   # necessário para Workload Identity Federation
 
     steps:
       - name: Baixar código
@@ -75,10 +78,16 @@ jobs:
             echo "resultado.xlsx não gerado."
           fi
 
+      - name: Autenticar no Google Cloud (Workload Identity Federation)
+        if: always()
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
       - name: Enviar para Google Drive
         if: always()
         env:
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           CODIGO_IF: ${{ inputs.codigo_if }}
           MODO: ${{ inputs.modo }}

@@ -5,16 +5,16 @@ Uso:
     python upload_drive.py <caminho1> [<caminho2> ...] --subpasta CRIs/22I1560033
 
 Variáveis de ambiente obrigatórias:
-    GOOGLE_CREDENTIALS     — JSON da conta de serviço (conteúdo completo)
     GOOGLE_DRIVE_FOLDER_ID — ID da pasta raiz no Google Drive
+
+Autenticação: usa Application Default Credentials (ADC).
+No GitHub Actions, configure o step google-github-actions/auth antes de chamar este script.
 """
 import argparse
-import json
 import os
-import sys
 from typing import Optional
 
-from google.oauth2 import service_account
+import google.auth
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -24,12 +24,10 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
 def _service():
-    credentials_json = os.environ.get("GOOGLE_CREDENTIALS", "")
-    if not credentials_json:
+    try:
+        credentials, _ = google.auth.default(scopes=SCOPES)
+    except google.auth.exceptions.DefaultCredentialsError:
         return None
-    credentials = service_account.Credentials.from_service_account_info(
-        json.loads(credentials_json), scopes=SCOPES
-    )
     return build("drive", "v3", credentials=credentials)
 
 
@@ -64,7 +62,7 @@ def upload(caminhos: list[str], subpasta: Optional[str] = None) -> list[str]:
     service = _service()
     base_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
     if service is None or not base_id:
-        print("GOOGLE_CREDENTIALS ou GOOGLE_DRIVE_FOLDER_ID não configurados. Pulando upload.",
+        print("Credenciais ADC ou GOOGLE_DRIVE_FOLDER_ID não configurados. Pulando upload.",
               flush=True)
         return []
 
