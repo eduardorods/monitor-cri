@@ -22,6 +22,8 @@ class ResumoOperacao:
     garantias_detalhadas: Optional[str] = None
     covenants: list = field(default_factory=list)
     tabela_cronograma: list = field(default_factory=list)
+    serie_unica: Optional[bool] = None
+    series: list = field(default_factory=list)
 
 
 def extrair_texto(caminho_pdf: str, max_paginas: int = 80) -> str:

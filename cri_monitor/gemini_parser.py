@@ -36,6 +36,10 @@ COVENANTS (cláusulas de vencimento antecipado ou obrigações financeiras):
 TABELA DO CRONOGRAMA DE PAGAMENTOS:
 - tabela_cronograma: lista de objetos com o cronograma detalhado extraído do Anexo ou tabela do Termo. Cada objeto deve ter os campos disponíveis dentre: {"data": "DD/MM/AAAA", "evento": "Juros/Amortização/Principal", "percentual_amortizacao": "X%", "valor_parcela": "R$ X", "saldo_devedor": "R$ X", "observacao": "..."}. Se não encontrar tabela, retorne lista vazia.
 
+SÉRIES DA EMISSÃO:
+- serie_unica: true se a emissão tem apenas uma série, false se tiver mais de uma série.
+- series: lista de objetos descrevendo cada série. Se for série única, retorne uma lista com um único objeto. Cada objeto deve conter os campos disponíveis dentre: {"serie": "1ª Série", "valor": "R$ X.XXX.XXX,XX", "quantidade_titulos": "X CRIs", "remuneracao": "CDI + 1,5% a.a.", "indice": "CDI", "data_emissao": "DD/MM/AAAA", "data_vencimento": "DD/MM/AAAA", "descricao": "descrição adicional relevante da série"}.
+
 Texto do Termo de Securitização:
 
 \"\"\"
@@ -93,4 +97,6 @@ def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
         garantias_detalhadas=data.get("garantias_detalhadas"),
         covenants=data.get("covenants") or [],
         tabela_cronograma=data.get("tabela_cronograma") or [],
+        serie_unica=data.get("serie_unica"),
+        series=data.get("series") or [],
     )

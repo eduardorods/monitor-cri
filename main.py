@@ -260,6 +260,34 @@ def _dump_excel(obj, path: str) -> None:
                 wo.cell(row=row_idx, column=1, value="Covenants").font = Font(bold=True)
                 cell = wo.cell(row=row_idx, column=2, value="\n".join(covenants))
                 cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+                row_idx += 1
+
+            serie_unica = resumo.get("serie_unica")
+            series = resumo.get("series") or []
+            if serie_unica is not None or series:
+                wo.cell(row=row_idx, column=1, value="Série Única?").font = Font(bold=True)
+                wo.cell(row=row_idx, column=2,
+                        value="Sim" if serie_unica else ("Não" if serie_unica is False else None))
+                row_idx += 1
+                for s in series:
+                    if not isinstance(s, dict):
+                        continue
+                    label = s.get("serie", "Série")
+                    partes = []
+                    if s.get("valor"):
+                        partes.append(f"Valor: {s['valor']}")
+                    if s.get("quantidade_titulos"):
+                        partes.append(f"Qtd: {s['quantidade_titulos']}")
+                    if s.get("remuneracao"):
+                        partes.append(f"Remuneração: {s['remuneracao']}")
+                    if s.get("data_vencimento"):
+                        partes.append(f"Vencimento: {s['data_vencimento']}")
+                    if s.get("descricao"):
+                        partes.append(s["descricao"])
+                    wo.cell(row=row_idx, column=1, value=label).font = Font(bold=True)
+                    cell = wo.cell(row=row_idx, column=2, value=" | ".join(partes))
+                    cell.alignment = __import__("openpyxl").styles.Alignment(wrap_text=True)
+                    row_idx += 1
 
             wo.column_dimensions["A"].width = 28
             wo.column_dimensions["B"].width = 80
