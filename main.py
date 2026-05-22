@@ -8,6 +8,7 @@ from typing import Optional
 from cri_monitor import B3Client
 from cri_monitor.fnet import baixar_documento
 from cri_monitor.pdf_parser import ResumoOperacao, analisar, extrair_texto
+from cri_monitor.gemini_parser import analisar_com_gemini
 
 
 CATEGORIAS_BAIXAR_DEFAULT = (
@@ -146,7 +147,15 @@ def _baixar_e_analisar(info, dir_destino: str):
     if caminho_termo:
         print(f"Analisando Termo de Securitização: {os.path.basename(caminho_termo)}", file=sys.stderr)
         texto = extrair_texto(caminho_termo)
-        resumo = analisar(texto)
+        if os.environ.get("GOOGLE_API_KEY"):
+            print("  Tentando análise com Gemini...", file=sys.stderr)
+            resumo = analisar_com_gemini(texto)
+            if resumo:
+                print("  Análise concluída via Gemini.", file=sys.stderr)
+        if resumo is None:
+            print("  Análise via regex (sem GOOGLE_API_KEY ou Gemini indisponível).",
+                  file=sys.stderr)
+            resumo = analisar(texto)
 
     return pdfs_baixados, resumo
 

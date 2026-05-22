@@ -51,6 +51,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Executar
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           case "${{ inputs.modo }}" in
             buscar)
