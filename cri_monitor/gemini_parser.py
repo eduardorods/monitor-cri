@@ -40,15 +40,15 @@ SÉRIES DA EMISSÃO:
 - serie_unica: true se a emissão tem apenas uma série, false se tiver mais de uma série.
 - series: lista de objetos descrevendo cada série. Se for série única, retorne uma lista com um único objeto. Cada objeto deve conter os campos disponíveis dentre: {"serie": "1ª Série", "valor": "R$ X.XXX.XXX,XX", "quantidade_titulos": "X CRIs", "remuneracao": "CDI + 1,5% a.a.", "indice": "CDI", "data_emissao": "DD/MM/AAAA", "data_vencimento": "DD/MM/AAAA", "descricao": "descrição adicional relevante da série"}.
 
-DICA: documentos jurídicos brasileiros usam termos definidos entre aspas (ex: "Devedora"), e a DEFINIÇÃO costuma aparecer IMEDIATAMENTE ANTES da menção entre aspas. Exemplo: "XYZ Logística Ltda., inscrita no CNPJ nº 12.345.678/0001-90, doravante denominada 'Devedora'". Use isso para identificar entidades.
+DICA 1: documentos jurídicos brasileiros usam termos definidos entre aspas (ex: "Devedora"), e a DEFINIÇÃO costuma aparecer IMEDIATAMENTE ANTES da menção entre aspas. Exemplo: "XYZ Logística Ltda., inscrita no CNPJ nº 12.345.678/0001-90, doravante denominada 'Devedora'". Use isso para identificar entidades.
 
-DESTAQUES (trechos-chave automaticamente extraídos ao redor de termos definidos):
+{instrucao_aditamentos}DESTAQUES (trechos-chave automaticamente extraídos ao redor de termos definidos):
 
 \"\"\"
 {excertos}
 \"\"\"
 
-TEXTO COMPLETO DO TERMO DE SECURITIZAÇÃO:
+TEXTO COMPLETO {rotulo_texto}:
 
 \"\"\"
 {texto}
@@ -57,9 +57,19 @@ TEXTO COMPLETO DO TERMO DE SECURITIZAÇÃO:
 Retorne APENAS o JSON, sem comentários ou texto adicional."""
 
 
+_INSTRUCAO_ADITAMENTOS = """DICA 2 (IMPORTANTE): o texto abaixo contém o TERMO DE SECURITIZAÇÃO ORIGINAL seguido de um ou mais ADITAMENTOS, separados por marcadores "=== DOCUMENTO N/M: ... ===". Os aditamentos modificam cláusulas do termo original (ex: "a Cláusula 3.1 passa a vigorar com a seguinte redação"). Aplique mentalmente as alterações na ordem em que aparecem (do mais antigo ao mais recente) e extraia os campos REFLETINDO O ESTADO FINAL — ou seja, os valores em vigor APÓS todos os aditamentos. Se um aditamento não trouxer o texto integral consolidado, deduza o estado atual combinando o original com as alterações pontuais.
+
+"""
+
+
 def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
-                        max_chars: int = 400_000) -> Optional[ResumoOperacao]:
-    """Extrai campos via Gemini Flash. Retorna None se a API key faltar ou erro."""
+                        max_chars: int = 400_000,
+                        multiplos_docs: bool = False) -> Optional[ResumoOperacao]:
+    """Extrai campos via Gemini Flash. Retorna None se a API key faltar ou erro.
+
+    Se `multiplos_docs=True`, o prompt instrui o modelo a tratar o texto como
+    "termo original + aditamentos" e aplicar as alterações em ordem.
+    """
     api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
     if not api_key or not texto:
         return None
@@ -76,7 +86,14 @@ def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
     print(f"  Gemini: {len(excertos)} excerto(s) de termos definidos.", file=sys.stderr)
 
     texto_limitado = texto[:max_chars]
-    prompt = _PROMPT.replace("{excertos}", excertos_str).replace("{texto}", texto_limitado)
+    instrucao = _INSTRUCAO_ADITAMENTOS if multiplos_docs else ""
+    rotulo = ("(TERMO ORIGINAL + ADITAMENTOS, em ordem cronológica)"
+              if multiplos_docs else "DO TERMO DE SECURITIZAÇÃO")
+    prompt = (_PROMPT
+              .replace("{instrucao_aditamentos}", instrucao)
+              .replace("{rotulo_texto}", rotulo)
+              .replace("{excertos}", excertos_str)
+              .replace("{texto}", texto_limitado))
 
     try:
         client = genai.Client(api_key=api_key)

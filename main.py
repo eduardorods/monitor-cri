@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Optional
 
 from cri_monitor import B3Client
+from cri_monitor.b3 import eh_consolidado
 from cri_monitor.fnet import baixar_documento
 from cri_monitor.pdf_parser import ResumoOperacao, analisar, extrair_texto
 from cri_monitor.gemini_parser import analisar_ata_com_gemini, analisar_com_gemini
@@ -104,18 +105,47 @@ def main() -> int:
     return _dump(payload, args.saida)
 
 
-def _baixar_e_analisar(info, dir_destino: str):
-    """Baixa PDFs das categorias relevantes e parseia o Termo de Securitização.
+def _selecionar_docs_termo(documentos):
+    """Decide quais documentos (termo + aditamentos) devem ser analisados juntos.
 
-    Limites por categoria (evita baixar dezenas de relatórios):
-    - termo_securitizacao: 1
-    - aditamento: 5 mais recentes
-    - ata_assembleia: 5 mais recentes
-    - relatorio_agente_fiduciario: 3 mais recentes
+    Regra:
+    1. Se existir versão CONSOLIDADA (termo ou aditamento com "consolidado" no nome),
+       usa apenas a mais recente — ela já incorpora os aditamentos.
+    2. Caso contrário, usa o termo ORIGINAL (mais antigo) + TODOS os aditamentos
+       em ordem cronológica (mais antigo → mais recente), para o Gemini conseguir
+       aplicar as emendas em ordem.
+    3. Se não houver termo original, usa apenas aditamentos (sinal de falha de
+       indexação, mas é o melhor que temos).
+
+    Retorna: lista de Documento(s) na ordem em que devem aparecer na análise.
+    """
+    termos = [d for d in documentos if d.categoria_normalizada == "termo_securitizacao"]
+    aditamentos = [d for d in documentos if d.categoria_normalizada == "aditamento"]
+
+    consolidados = [d for d in (termos + aditamentos) if eh_consolidado(d.nome, d.tipo)]
+    if consolidados:
+        # info.documentos vem ordenado por dataEntrega desc → primeiro = mais recente
+        return [consolidados[0]]
+
+    selecionados = []
+    if termos:
+        # Mais antigo = última posição na lista desc
+        selecionados.append(termos[-1])
+    # Aditamentos em ordem cronológica (do mais antigo ao mais recente)
+    selecionados.extend(reversed(aditamentos))
+    return selecionados
+
+
+def _baixar_e_analisar(info, dir_destino: str):
+    """Baixa PDFs relevantes e analisa o Termo (+ aditamentos quando aplicável).
+
+    Termo + aditamentos são analisados em conjunto: se houver versão consolidada
+    ela é usada sozinha; senão o Gemini recebe original + todos aditamentos em
+    ordem cronológica para aplicar as emendas.
+
+    Limites: ata_assembleia 5 recentes, relatorio_agente_fiduciario 3 recentes.
     """
     LIMITE_CATEGORIA = {
-        "termo_securitizacao": 1,
-        "aditamento": 5,
         "ata_assembleia": 5,
         "relatorio_agente_fiduciario": 3,
     }
@@ -123,44 +153,80 @@ def _baixar_e_analisar(info, dir_destino: str):
     print(f"Baixando PDFs para {alvo_dir}...", file=sys.stderr)
     print(f"  Total de documentos disponíveis: {len(info.documentos)}", file=sys.stderr)
 
+    docs_termo_selecionados = _selecionar_docs_termo(info.documentos)
+    ids_termo = {id(d) for d in docs_termo_selecionados}
+    if docs_termo_selecionados:
+        print(f"  Análise do Termo: {len(docs_termo_selecionados)} documento(s) "
+              f"selecionado(s):", file=sys.stderr)
+        for d in docs_termo_selecionados:
+            marca = " [CONSOLIDADO]" if eh_consolidado(d.nome, d.tipo) else ""
+            print(f"    - [{d.categoria_normalizada}] {d.nome or '(sem nome)'} "
+                  f"({d.data_entrega or 's/d'}){marca}", file=sys.stderr)
+
     contagem: dict[str, int] = {}
     pdfs_baixados: list[str] = []
-    caminho_termo: Optional[str] = None
+    caminhos_termo: list[tuple[str, object]] = []  # (caminho, doc) em ordem de análise
     caminhos_atas: list[str] = []
 
     for i, doc in enumerate(info.documentos, 1):
         cat = doc.categoria_normalizada
+        eh_doc_termo = id(doc) in ids_termo
         if cat not in CATEGORIAS_BAIXAR_DEFAULT:
             continue
         if not doc.url:
             continue
-        limite = LIMITE_CATEGORIA.get(cat, 3)
-        if contagem.get(cat, 0) >= limite:
+        if not eh_doc_termo and cat in LIMITE_CATEGORIA:
+            if contagem.get(cat, 0) >= LIMITE_CATEGORIA[cat]:
+                continue
+            contagem[cat] = contagem.get(cat, 0) + 1
+        elif not eh_doc_termo and cat in ("termo_securitizacao", "aditamento"):
+            # Termo/aditamento não selecionado para análise: pula download
             continue
-        contagem[cat] = contagem.get(cat, 0) + 1
+
         nome_base = f"{i:03d}_{(cat or 'doc')}_{(doc.nome or 'doc')}"
         caminho = baixar_documento(doc.url, alvo_dir, nome_base)
         if caminho:
             print(f"  [{cat}] Baixado: {os.path.basename(caminho)}", file=sys.stderr)
             pdfs_baixados.append(caminho)
-            if cat == "termo_securitizacao" and not caminho_termo:
-                caminho_termo = caminho
+            if eh_doc_termo:
+                caminhos_termo.append((caminho, doc))
             elif cat == "ata_assembleia":
                 caminhos_atas.append(caminho)
 
+    # Reordena caminhos_termo na ordem de docs_termo_selecionados (pode diferir
+    # da ordem de download por causa de falhas)
+    ordem = {id(d): i for i, d in enumerate(docs_termo_selecionados)}
+    caminhos_termo.sort(key=lambda cd: ordem.get(id(cd[1]), 999))
+
     resumo: Optional[ResumoOperacao] = None
-    if caminho_termo:
-        print(f"Analisando Termo de Securitização: {os.path.basename(caminho_termo)}", file=sys.stderr)
-        texto = extrair_texto(caminho_termo)
+    if caminhos_termo:
+        partes = []
+        for caminho, doc in caminhos_termo:
+            print(f"  Extraindo texto: {os.path.basename(caminho)}", file=sys.stderr)
+            txt = extrair_texto(caminho)
+            cabecalho = f"{doc.categoria_normalizada.upper()} — {doc.nome or ''} ({doc.data_entrega or 's/d'})"
+            partes.append((cabecalho, txt))
+
+        if len(partes) == 1:
+            texto_combinado = partes[0][1]
+            multiplos = False
+        else:
+            texto_combinado = "\n\n".join(
+                f"=== DOCUMENTO {i+1}/{len(partes)}: {cab} ===\n\n{txt}"
+                for i, (cab, txt) in enumerate(partes)
+            )
+            multiplos = True
+
         if os.environ.get("GOOGLE_API_KEY"):
-            print("  Tentando análise com Gemini...", file=sys.stderr)
-            resumo = analisar_com_gemini(texto)
+            print(f"  Tentando análise com Gemini ({len(partes)} doc(s), "
+                  f"{len(texto_combinado):,} chars)...", file=sys.stderr)
+            resumo = analisar_com_gemini(texto_combinado, multiplos_docs=multiplos)
             if resumo:
                 print("  Análise concluída via Gemini.", file=sys.stderr)
         if resumo is None:
             print("  Análise via regex (sem GOOGLE_API_KEY ou Gemini indisponível).",
                   file=sys.stderr)
-            resumo = analisar(texto)
+            resumo = analisar(texto_combinado)
 
     atas_analisadas: list[dict] = []
     if os.environ.get("GOOGLE_API_KEY") and caminhos_atas:

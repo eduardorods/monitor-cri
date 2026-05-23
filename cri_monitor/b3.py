@@ -404,10 +404,24 @@ def _categorizar(*campos: Optional[str]) -> Optional[str]:
     texto = " ".join(c for c in campos if c).lower()
     if not texto:
         return None
-    for chave, marcadores in CATEGORIAS_DOCUMENTO.items():
-        if any(m in texto for m in marcadores):
-            return chave
+    # Ordem importa: "1º Aditamento ao Termo de Securitização" contém ambos os
+    # padrões — precisa ser classificado como aditamento, não como termo.
+    if "aditamento" in texto or "aditivo" in texto:
+        return "aditamento"
+    if "termo de securitiza" in texto:
+        return "termo_securitizacao"
+    if "ata" in texto and "assembleia" in texto:
+        return "ata_assembleia"
+    if any(m in texto for m in ("relatório do agente", "relatorio do agente",
+                                 "relatório anual do agente", "relatório do trustee")):
+        return "relatorio_agente_fiduciario"
     return None
+
+
+def eh_consolidado(*campos: Optional[str]) -> bool:
+    """True se o documento for uma versão consolidada (já incorpora aditamentos)."""
+    texto = " ".join(c for c in campos if c).lower()
+    return "consolidad" in texto  # consolidado, consolidada, consolidação
 
 
 def _documento_relacionado(
