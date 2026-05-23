@@ -64,7 +64,7 @@ def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
         return None
 
     texto_limitado = texto[:max_chars]
-    prompt = _PROMPT.format(texto=texto_limitado)
+    prompt = _PROMPT.replace("{texto}", texto_limitado)
 
     try:
         client = genai.Client(api_key=api_key)
@@ -133,7 +133,7 @@ def analisar_ata_com_gemini(texto: str, nome_arquivo: str,
     except ImportError:
         return None
 
-    prompt = _PROMPT_ATA.format(texto=texto[:max_chars])
+    prompt = _PROMPT_ATA.replace("{texto}", texto[:max_chars])
 
     try:
         client = genai.Client(api_key=api_key)
