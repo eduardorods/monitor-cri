@@ -4,7 +4,7 @@ import os
 import sys
 from typing import Optional
 
-from cri_monitor.pdf_parser import ResumoOperacao
+from cri_monitor.pdf_parser import ResumoOperacao, extrair_excertos_definicoes
 
 
 _PROMPT = """Você é um especialista em direito financeiro brasileiro analisando um Termo de Securitização de CRI (Certificado de Recebíveis Imobiliários).
@@ -40,7 +40,15 @@ SÉRIES DA EMISSÃO:
 - serie_unica: true se a emissão tem apenas uma série, false se tiver mais de uma série.
 - series: lista de objetos descrevendo cada série. Se for série única, retorne uma lista com um único objeto. Cada objeto deve conter os campos disponíveis dentre: {"serie": "1ª Série", "valor": "R$ X.XXX.XXX,XX", "quantidade_titulos": "X CRIs", "remuneracao": "CDI + 1,5% a.a.", "indice": "CDI", "data_emissao": "DD/MM/AAAA", "data_vencimento": "DD/MM/AAAA", "descricao": "descrição adicional relevante da série"}.
 
-Texto do Termo de Securitização:
+DICA: documentos jurídicos brasileiros usam termos definidos entre aspas (ex: "Devedora"), e a DEFINIÇÃO costuma aparecer IMEDIATAMENTE ANTES da menção entre aspas. Exemplo: "XYZ Logística Ltda., inscrita no CNPJ nº 12.345.678/0001-90, doravante denominada 'Devedora'". Use isso para identificar entidades.
+
+DESTAQUES (trechos-chave automaticamente extraídos ao redor de termos definidos):
+
+\"\"\"
+{excertos}
+\"\"\"
+
+TEXTO COMPLETO DO TERMO DE SECURITIZAÇÃO:
 
 \"\"\"
 {texto}
@@ -63,8 +71,12 @@ def analisar_com_gemini(texto: str, api_key: Optional[str] = None,
         print("  Pacote google-genai não instalado.", file=sys.stderr)
         return None
 
+    excertos = extrair_excertos_definicoes(texto)
+    excertos_str = "\n\n".join(excertos) if excertos else "(nenhum termo definido encontrado)"
+    print(f"  Gemini: {len(excertos)} excerto(s) de termos definidos.", file=sys.stderr)
+
     texto_limitado = texto[:max_chars]
-    prompt = _PROMPT.replace("{texto}", texto_limitado)
+    prompt = _PROMPT.replace("{excertos}", excertos_str).replace("{texto}", texto_limitado)
 
     try:
         client = genai.Client(api_key=api_key)

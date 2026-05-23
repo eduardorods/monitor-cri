@@ -4,6 +4,60 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+# Termos definidos típicos em Termos de Securitização brasileiros.
+# Para cada termo, capturamos o contexto ANTES da menção entre aspas,
+# que normalmente contém a definição (ex.: "...XYZ Ltda. ... denominada "Devedora"...").
+TERMOS_DEFINIDOS_ALVO = [
+    "Devedora", "Devedor", "Devedores",
+    "Securitizadora", "Emissora",
+    "Agente Fiduciário", "Agente",
+    "Coordenador Líder", "Coordenador",
+    "Cedente", "Cessionária",
+    "Originadora", "Originador",
+    "Lastro", "Créditos Imobiliários",
+    "Termo de Securitização", "Termo",
+    "Emissão", "Série", "CRI",
+    "Garantia", "Garantidor", "Fiadora", "Fiador",
+    "Vencimento", "Data de Emissão", "Data de Vencimento",
+    "Remuneração", "Juros Remuneratórios",
+    "Atualização Monetária",
+    "Fundo de Reserva", "Fundo de Despesas",
+    "Patrimônio Separado",
+]
+
+
+def extrair_excertos_definicoes(texto: str, termos: Optional[list] = None,
+                                contexto_antes: int = 400,
+                                contexto_depois: int = 80,
+                                max_excertos: int = 60) -> list[str]:
+    """Localiza menções a termos definidos entre aspas (ex: "Devedora") e
+    extrai o contexto ANTES da menção, onde a definição costuma estar.
+
+    Retorna lista de excertos deduplicados, prontos para inclusão no prompt.
+    """
+    if not texto:
+        return []
+    termos = termos or TERMOS_DEFINIDOS_ALVO
+    aspas = '["“”‘’\']'
+    excertos: list[str] = []
+    vistos: set[str] = set()
+
+    for termo in termos:
+        padrao = rf'{aspas}\s*({re.escape(termo)})\s*{aspas}'
+        for m in re.finditer(padrao, texto, re.IGNORECASE):
+            ini = max(0, m.start() - contexto_antes)
+            fim = min(len(texto), m.end() + contexto_depois)
+            trecho = re.sub(r"\s+", " ", texto[ini:fim]).strip()
+            chave = trecho[:80].lower()
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            excertos.append(f'[{termo}] {trecho}')
+            if len(excertos) >= max_excertos:
+                return excertos
+    return excertos
+
+
 @dataclass
 class ResumoOperacao:
     devedor: Optional[str] = None
