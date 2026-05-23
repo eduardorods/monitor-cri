@@ -26,8 +26,25 @@ class ResumoOperacao:
     series: list = field(default_factory=list)
 
 
-def extrair_texto(caminho_pdf: str, max_paginas: int = 80) -> str:
-    """Extrai texto de um PDF. Lê só as primeiras `max_paginas` páginas (Termos têm 100+)."""
+def extrair_texto(caminho_pdf: str, max_paginas: int = 150) -> str:
+    """Extrai texto de um PDF. Lê até `max_paginas` páginas.
+    Usa pdfplumber (melhor para layout/colunas/tabelas) com fallback para pypdf."""
+    try:
+        import pdfplumber
+        textos = []
+        with pdfplumber.open(caminho_pdf) as pdf:
+            for i, pagina in enumerate(pdf.pages):
+                if i >= max_paginas:
+                    break
+                try:
+                    txt = pagina.extract_text() or ""
+                except Exception:
+                    txt = ""
+                textos.append(txt)
+        return "\n".join(textos)
+    except Exception:
+        pass
+
     try:
         from pypdf import PdfReader
     except ImportError:
