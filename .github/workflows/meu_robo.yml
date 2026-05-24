@@ -57,22 +57,44 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Executar
+        env:
+          INPUT_MODO: ${{ inputs.modo }}
+          INPUT_CODIGO_IF: ${{ inputs.codigo_if }}
+          INPUT_CNPJ: ${{ inputs.cnpj_securitizadora }}
+          INPUT_LIMITE: ${{ inputs.limite }}
+          INPUT_SEM_DOCS: ${{ inputs.sem_documentos }}
         run: |
-          case "${{ inputs.modo }}" in
+          # Remove espaços acidentais em volta dos inputs (cole/UI às vezes adicionam)
+          CODIGO_IF="$(echo -n "$INPUT_CODIGO_IF" | tr -d '[:space:]')"
+          CNPJ="$(echo -n "$INPUT_CNPJ" | tr -d '[:space:]')"
+
+          case "$INPUT_MODO" in
             buscar)
-              ARGS="--codigo-if ${{ inputs.codigo_if }} --saida resultado.xlsx --baixar-pdfs pdfs"
-              [ -n "${{ inputs.cnpj_securitizadora }}" ] && ARGS="$ARGS --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }}"
-              [ "${{ inputs.sem_documentos }}" = "true" ] && ARGS="$ARGS --sem-documentos"
+              if [ -z "$CODIGO_IF" ]; then
+                echo "::error::Modo 'buscar' exige preencher o campo 'codigo_if' (ex.: 19F0076447). Re-execute o workflow informando o código."
+                exit 1
+              fi
+              ARGS=(--codigo-if "$CODIGO_IF" --saida resultado.xlsx --baixar-pdfs pdfs)
+              [ -n "$CNPJ" ] && ARGS+=(--cnpj-securitizadora "$CNPJ")
+              [ "$INPUT_SEM_DOCS" = "true" ] && ARGS+=(--sem-documentos)
               ;;
             listar-securitizadoras)
-              ARGS="--listar-securitizadoras --saida resultado.xlsx"
+              ARGS=(--listar-securitizadoras --saida resultado.xlsx)
               ;;
             listar-cris)
-              ARGS="--listar-cris --cnpj-securitizadora ${{ inputs.cnpj_securitizadora }} --limite ${{ inputs.limite }} --saida resultado.xlsx"
+              if [ -z "$CNPJ" ]; then
+                echo "::error::Modo 'listar-cris' exige preencher 'cnpj_securitizadora'."
+                exit 1
+              fi
+              ARGS=(--listar-cris --cnpj-securitizadora "$CNPJ" --limite "${INPUT_LIMITE:-0}" --saida resultado.xlsx)
+              ;;
+            *)
+              echo "::error::Modo desconhecido: $INPUT_MODO"
+              exit 1
               ;;
           esac
-          echo "Executando: python main.py $ARGS"
-          python main.py $ARGS
+          echo "Executando: python main.py ${ARGS[*]}"
+          python main.py "${ARGS[@]}"
 
       - name: Mostrar resumo no log
         if: always()
@@ -86,9 +108,10 @@ jobs:
       - name: Enviar para Google Drive
         if: always()
         env:
-          CODIGO_IF: ${{ inputs.codigo_if }}
+          INPUT_CODIGO_IF: ${{ inputs.codigo_if }}
           MODO: ${{ inputs.modo }}
         run: |
+          CODIGO_IF="$(echo -n "$INPUT_CODIGO_IF" | tr -d '[:space:]')"
           if [ ! -f resultado.xlsx ]; then
             echo "Sem arquivo para enviar."
             exit 0
