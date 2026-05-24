@@ -139,22 +139,56 @@ class B3Client:
             return None
         return _build_cri_info_balcao(results[0])
 
-    def _buscar_id_fundo_fnet(self, isin: str) -> Optional[int]:
-        """Resolve ISIN → idFundo interno do FNet (sistema CVM de certificados)."""
-        try:
-            resp = self.session.get(
-                FNET_BASE_URL + "listarFundos",
-                params={"term": isin, "page": 1, "idTipoFundo": 0,
-                        "idAdm": 0, "paraCerts": "true"},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            items = data if isinstance(data, list) else data.get("results", [])
-            if items:
-                return items[0].get("id")
-        except Exception:
-            pass
+    def _buscar_id_fundo_fnet(self, isin: str,
+                              codigo_if: Optional[str] = None) -> Optional[int]:
+        """Resolve ISIN → idFundo interno do FNet (sistema CVM de certificados).
+
+        Tenta primeiro pelo ISIN; se falhar, tenta pelo codigo_if como fallback.
+        Faz até 3 tentativas com backoff em caso de timeout/erro de rede.
+        """
+        termos = [t for t in (isin, codigo_if) if t]
+        for termo in termos:
+            id_fundo = self._tentar_listar_fundos(termo)
+            if id_fundo is not None:
+                return id_fundo
+            if termo != termos[-1]:
+                print(f"  FNet: busca por '{termo}' não retornou; tentando próximo termo...",
+                      file=sys.stderr)
+        return None
+
+    def _tentar_listar_fundos(self, termo: str) -> Optional[int]:
+        """Chama listarFundos com retries; retorna o id do primeiro resultado."""
+        timeouts_por_tentativa = (60, 90, 90)
+        backoffs = (2, 4, 8)
+        ultimo_erro: Optional[str] = None
+        for tentativa, (tmout, sleep_s) in enumerate(zip(timeouts_por_tentativa, backoffs), 1):
+            try:
+                resp = self.session.get(
+                    FNET_BASE_URL + "listarFundos",
+                    params={"term": termo, "page": 1, "idTipoFundo": 0,
+                            "idAdm": 0, "paraCerts": "true"},
+                    timeout=tmout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("results", [])
+                if items:
+                    return items[0].get("id")
+                # Resposta válida mas vazia — não adianta retentar
+                print(f"  FNet: busca por '{termo}' retornou 0 resultados.", file=sys.stderr)
+                return None
+            except requests.Timeout:
+                ultimo_erro = f"timeout após {tmout}s"
+            except requests.HTTPError as e:
+                ultimo_erro = f"HTTP {e.response.status_code}"
+            except Exception as e:
+                ultimo_erro = f"{type(e).__name__}: {e}"
+            print(f"  FNet: tentativa {tentativa}/3 falhou ({ultimo_erro}); "
+                  f"aguardando {sleep_s}s...", file=sys.stderr)
+            import time
+            time.sleep(sleep_s)
+        print(f"  FNet: todas as tentativas falharam para '{termo}' ({ultimo_erro}).",
+              file=sys.stderr)
         return None
 
     def _documentos_fnet_cvm(self, id_fundo: int) -> Iterator[dict]:
@@ -178,7 +212,7 @@ class B3Client:
                 resp = self.session.get(
                     FNET_BASE_URL + "pesquisarGerenciadorDocumentosDados",
                     params=params,
-                    timeout=self.timeout,
+                    timeout=max(self.timeout, 60),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -251,17 +285,19 @@ class B3Client:
         return None
 
     def _buscar_documentos_do_cri(self, info: CRIInfo) -> list:
-        # Busca via FNet/CVM por ISIN (API correta para CRI)
-        if info.isin:
-            print(f"  FNet CVM: buscando idFundo para ISIN={info.isin}...", file=sys.stderr)
-            id_fundo = self._buscar_id_fundo_fnet(info.isin)
+        # Busca via FNet/CVM por ISIN (API correta para CRI), com fallback p/ codigo_if
+        if info.isin or info.codigo_if:
+            print(f"  FNet CVM: buscando idFundo (ISIN={info.isin}, "
+                  f"codigo_if={info.codigo_if})...", file=sys.stderr)
+            id_fundo = self._buscar_id_fundo_fnet(info.isin, info.codigo_if)
             if id_fundo:
                 print(f"  FNet CVM: idFundo={id_fundo}, buscando documentos...", file=sys.stderr)
                 docs = [_build_documento_fnet(d) for d in self._documentos_fnet_cvm(id_fundo)]
                 print(f"  FNet CVM: {len(docs)} documento(s) encontrado(s).", file=sys.stderr)
                 return docs
             else:
-                print(f"  FNet CVM: idFundo não encontrado para ISIN={info.isin}.", file=sys.stderr)
+                print(f"  FNet CVM: idFundo não encontrado (ISIN={info.isin}, "
+                      f"codigo_if={info.codigo_if}).", file=sys.stderr)
 
         # Fallback: GetListedDocumentsTypeHistory por CNPJ
         if not info.cnpj_securitizadora:
