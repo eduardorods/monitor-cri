@@ -44,6 +44,7 @@ class Documento:
     data_entrega: Optional[str] = None
     data_referencia: Optional[str] = None
     url: Optional[str] = None
+    fnet_id: Optional[str] = None
     raw: dict = field(default_factory=dict)
 
 
@@ -376,6 +377,7 @@ def _build_documento_fnet(doc: dict) -> Documento:
         data_entrega=doc.get("dataEntrega") or doc.get("submissionDate"),
         data_referencia=doc.get("dataReferencia") or doc.get("referenceDate"),
         url=url,
+        fnet_id=str(doc_id) if doc_id else None,
         raw=doc,
     )
 
@@ -396,6 +398,7 @@ def _build_documento(doc: dict) -> Documento:
         data_entrega=doc.get("submissionDate") or doc.get("dataEntrega"),
         data_referencia=doc.get("referenceDate") or doc.get("dataReferencia"),
         url=url,
+        fnet_id=str(doc_id) if doc_id else None,
         raw=doc,
     )
 

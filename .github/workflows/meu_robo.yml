@@ -37,6 +37,12 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
 
     steps:
       - name: Baixar código
@@ -51,8 +57,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Executar
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           case "${{ inputs.modo }}" in
             buscar)
@@ -82,10 +86,6 @@ jobs:
       - name: Enviar para Google Drive
         if: always()
         env:
-          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           CODIGO_IF: ${{ inputs.codigo_if }}
           MODO: ${{ inputs.modo }}
         run: |
@@ -95,13 +95,22 @@ jobs:
           fi
           if [ "$MODO" = "buscar" ] && [ -n "$CODIGO_IF" ]; then
             SUBPASTA="CRIs/$CODIGO_IF"
-            ARQUIVOS=("resultado.xlsx")
+            # PDFs do FNet (não inclui manuais baixados do Drive — esses não
+            # precisam voltar): nomes determinísticos 'fnet*' garantem dedupe.
+            PDFS=()
             if [ -d "pdfs/$CODIGO_IF" ]; then
-              while IFS= read -r -d '' f; do ARQUIVOS+=("$f"); done < <(find "pdfs/$CODIGO_IF" -type f -print0)
+              while IFS= read -r -d '' f; do
+                PDFS+=("$f")
+              done < <(find "pdfs/$CODIGO_IF" -maxdepth 1 -type f \( -name "fnet*.pdf" -o -name "i[0-9][0-9][0-9]_*.pdf" \) -print0)
             fi
-            python upload_drive.py --subpasta "$SUBPASTA" "${ARQUIVOS[@]}"
+            if [ ${#PDFS[@]} -gt 0 ]; then
+              echo "Subindo ${#PDFS[@]} PDF(s) (skip-existing)..."
+              python upload_drive.py --subpasta "$SUBPASTA" --skip-existing "${PDFS[@]}"
+            fi
+            # resultado.xlsx sempre atualiza (overwrite), nunca duplica.
+            python upload_drive.py --subpasta "$SUBPASTA" --replace-existing resultado.xlsx
           else
-            python upload_drive.py --subpasta "CRIs" resultado.xlsx
+            python upload_drive.py --subpasta "CRIs" --replace-existing resultado.xlsx
           fi
 
       - name: Upload do artefato

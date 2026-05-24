@@ -7,6 +7,7 @@ from typing import Optional
 
 from cri_monitor import B3Client
 from cri_monitor.b3 import eh_consolidado
+from cri_monitor.drive import baixar_manuais
 from cri_monitor.fnet import baixar_documento
 from cri_monitor.pdf_parser import ResumoOperacao, analisar, extrair_texto
 from cri_monitor.gemini_parser import analisar_ata_com_gemini, analisar_com_gemini
@@ -89,12 +90,16 @@ def main() -> int:
 
     resumo: Optional[ResumoOperacao] = None
     pdfs_baixados: list[str] = []
+    atas_analisadas: list[dict] = []
+    termo_origem: str = "n/a"
 
     if args.baixar_pdfs and info.documentos:
-        pdfs_baixados, resumo, atas_analisadas = _baixar_e_analisar(info, args.baixar_pdfs)
+        pdfs_baixados, resumo, atas_analisadas, termo_origem = _baixar_e_analisar(
+            info, args.baixar_pdfs)
         _preencher_lacunas(info, resumo)
 
     payload = info.to_dict()
+    payload["termo_origem"] = termo_origem
     if resumo is not None:
         payload["resumo_operacao"] = asdict(resumo)
     if pdfs_baixados:
@@ -136,14 +141,29 @@ def _selecionar_docs_termo(documentos):
     return selecionados
 
 
+def _nome_base_doc(doc, idx_fallback: int) -> str:
+    """Nome de arquivo determinístico para um Documento FNet.
+
+    Usa o ID do FNet como prefixo (estável entre execuções → dedupe funciona).
+    Fallback: usa índice posicional (raro, só se a fonte não traz ID).
+    """
+    prefixo = f"fnet{doc.fnet_id}" if doc.fnet_id else f"i{idx_fallback:03d}"
+    cat = doc.categoria_normalizada or "doc"
+    nome = doc.nome or "doc"
+    return f"{prefixo}_{cat}_{nome}"
+
+
 def _baixar_e_analisar(info, dir_destino: str):
-    """Baixa PDFs relevantes e analisa o Termo (+ aditamentos quando aplicável).
+    """Baixa PDFs relevantes e analisa Termo (+ aditamentos quando aplicável).
 
-    Termo + aditamentos são analisados em conjunto: se houver versão consolidada
-    ela é usada sozinha; senão o Gemini recebe original + todos aditamentos em
-    ordem cronológica para aplicar as emendas.
+    Ordem de prioridade para o "termo principal":
+    1. Arquivo `manual_*` no Drive (escape hatch quando FNet não tem o original).
+    2. Termo FNet (ou versão consolidada, se existir).
+    3. Apenas aditamentos (degraded).
 
-    Limites: ata_assembleia 5 recentes, relatorio_agente_fiduciario 3 recentes.
+    Retorna (pdfs_baixados, resumo, atas_analisadas, termo_origem).
+    termo_origem ∈ {'manual_drive', 'fnet', 'fnet_consolidado',
+                    'fnet_so_aditamentos', 'ausente'}.
     """
     LIMITE_CATEGORIA = {
         "ata_assembleia": 5,
@@ -153,19 +173,62 @@ def _baixar_e_analisar(info, dir_destino: str):
     print(f"Baixando PDFs para {alvo_dir}...", file=sys.stderr)
     print(f"  Total de documentos disponíveis: {len(info.documentos)}", file=sys.stderr)
 
-    docs_termo_selecionados = _selecionar_docs_termo(info.documentos)
-    ids_termo = {id(d) for d in docs_termo_selecionados}
-    if docs_termo_selecionados:
-        print(f"  Análise do Termo: {len(docs_termo_selecionados)} documento(s) "
-              f"selecionado(s):", file=sys.stderr)
-        for d in docs_termo_selecionados:
+    # 1) Tenta detectar arquivo manual no Drive
+    manual_termo = None
+    subpasta_drive = f"CRIs/{info.codigo_if}" if info.codigo_if else None
+    if subpasta_drive:
+        manuais = baixar_manuais(subpasta_drive, alvo_dir)
+        for m in manuais:
+            nome_min = os.path.basename(m).lower()
+            if "termo" in nome_min:
+                manual_termo = m
+                break
+        if manuais:
+            print(f"  Drive: {len(manuais)} arquivo(s) manual(is) detectado(s); "
+                  f"manual_termo={'sim' if manual_termo else 'não'}", file=sys.stderr)
+
+    # 2) Seleciona termo + aditamentos do FNet
+    docs_termo_fnet = _selecionar_docs_termo(info.documentos)
+    ids_termo = {id(d) for d in docs_termo_fnet}
+    tem_termo_fnet = any(d.categoria_normalizada == "termo_securitizacao"
+                          for d in docs_termo_fnet)
+    tem_consolidado = any(eh_consolidado(d.nome, d.tipo) for d in docs_termo_fnet)
+
+    if docs_termo_fnet:
+        print(f"  FNet: {len(docs_termo_fnet)} documento(s) selecionado(s):",
+              file=sys.stderr)
+        for d in docs_termo_fnet:
             marca = " [CONSOLIDADO]" if eh_consolidado(d.nome, d.tipo) else ""
             print(f"    - [{d.categoria_normalizada}] {d.nome or '(sem nome)'} "
                   f"({d.data_entrega or 's/d'}){marca}", file=sys.stderr)
 
+    # 3) Decide a origem do termo principal
+    if manual_termo:
+        termo_origem = "manual_drive"
+    elif tem_consolidado:
+        termo_origem = "fnet_consolidado"
+    elif tem_termo_fnet:
+        termo_origem = "fnet"
+    elif docs_termo_fnet:  # só aditamentos
+        termo_origem = "fnet_so_aditamentos"
+    else:
+        termo_origem = "ausente"
+    print(f"  Origem do termo principal: {termo_origem}", file=sys.stderr)
+    if termo_origem == "ausente":
+        print(f"  AVISO: nenhum termo de securitização encontrado no FNet nem manual "
+              f"no Drive. Para corrigir, faça upload do PDF em "
+              f"Drive:/CRIs/{info.codigo_if}/ com nome iniciado por 'manual_termo' "
+              f"e re-execute.", file=sys.stderr)
+    elif termo_origem == "fnet_so_aditamentos":
+        print(f"  AVISO: FNet só tem aditamentos (sem termo original). Análise pode "
+              f"ficar incompleta. Para análise completa, faça upload do termo "
+              f"original em Drive:/CRIs/{info.codigo_if}/manual_termo.pdf.",
+              file=sys.stderr)
+
+    # 4) Download dos docs do FNet (com dedupe por nome local determinístico)
     contagem: dict[str, int] = {}
     pdfs_baixados: list[str] = []
-    caminhos_termo: list[tuple[str, object]] = []  # (caminho, doc) em ordem de análise
+    caminhos_termo_fnet: list[tuple[str, object]] = []
     caminhos_atas: list[str] = []
 
     for i, doc in enumerate(info.documentos, 1):
@@ -180,33 +243,50 @@ def _baixar_e_analisar(info, dir_destino: str):
                 continue
             contagem[cat] = contagem.get(cat, 0) + 1
         elif not eh_doc_termo and cat in ("termo_securitizacao", "aditamento"):
-            # Termo/aditamento não selecionado para análise: pula download
             continue
 
-        nome_base = f"{i:03d}_{(cat or 'doc')}_{(doc.nome or 'doc')}"
+        nome_base = _nome_base_doc(doc, i)
         caminho = baixar_documento(doc.url, alvo_dir, nome_base)
         if caminho:
             print(f"  [{cat}] Baixado: {os.path.basename(caminho)}", file=sys.stderr)
             pdfs_baixados.append(caminho)
             if eh_doc_termo:
-                caminhos_termo.append((caminho, doc))
+                caminhos_termo_fnet.append((caminho, doc))
             elif cat == "ata_assembleia":
                 caminhos_atas.append(caminho)
 
-    # Reordena caminhos_termo na ordem de docs_termo_selecionados (pode diferir
-    # da ordem de download por causa de falhas)
-    ordem = {id(d): i for i, d in enumerate(docs_termo_selecionados)}
-    caminhos_termo.sort(key=lambda cd: ordem.get(id(cd[1]), 999))
+    # Mantém ordem cronológica (consolidado primeiro, ou original → aditamentos)
+    ordem = {id(d): i for i, d in enumerate(docs_termo_fnet)}
+    caminhos_termo_fnet.sort(key=lambda cd: ordem.get(id(cd[1]), 999))
 
+    # 5) Monta a lista final de docs para análise
+    partes: list[tuple[str, str]] = []  # (cabeçalho, texto)
+    if manual_termo:
+        print(f"  Extraindo texto (manual): {os.path.basename(manual_termo)}",
+              file=sys.stderr)
+        partes.append((f"TERMO DE SECURITIZAÇÃO (UPLOAD MANUAL) — "
+                       f"{os.path.basename(manual_termo)}",
+                       extrair_texto(manual_termo)))
+        # Quando temos manual, ignoramos o termo original do FNet (manual o substitui)
+        # mas mantemos os aditamentos do FNet
+        for caminho, doc in caminhos_termo_fnet:
+            if doc.categoria_normalizada == "aditamento":
+                print(f"  Extraindo texto (FNet): {os.path.basename(caminho)}",
+                      file=sys.stderr)
+                cab = (f"{doc.categoria_normalizada.upper()} — {doc.nome or ''} "
+                       f"({doc.data_entrega or 's/d'})")
+                partes.append((cab, extrair_texto(caminho)))
+    else:
+        for caminho, doc in caminhos_termo_fnet:
+            print(f"  Extraindo texto (FNet): {os.path.basename(caminho)}",
+                  file=sys.stderr)
+            cab = (f"{doc.categoria_normalizada.upper()} — {doc.nome or ''} "
+                   f"({doc.data_entrega or 's/d'})")
+            partes.append((cab, extrair_texto(caminho)))
+
+    # 6) Análise
     resumo: Optional[ResumoOperacao] = None
-    if caminhos_termo:
-        partes = []
-        for caminho, doc in caminhos_termo:
-            print(f"  Extraindo texto: {os.path.basename(caminho)}", file=sys.stderr)
-            txt = extrair_texto(caminho)
-            cabecalho = f"{doc.categoria_normalizada.upper()} — {doc.nome or ''} ({doc.data_entrega or 's/d'})"
-            partes.append((cabecalho, txt))
-
+    if partes:
         if len(partes) == 1:
             texto_combinado = partes[0][1]
             multiplos = False
@@ -239,7 +319,7 @@ def _baixar_e_analisar(info, dir_destino: str):
             if resultado:
                 atas_analisadas.append(resultado)
 
-    return pdfs_baixados, resumo, atas_analisadas
+    return pdfs_baixados, resumo, atas_analisadas, termo_origem
 
 
 def _preencher_lacunas(info, resumo: Optional[ResumoOperacao]) -> None:
@@ -280,6 +360,19 @@ def _dump_excel(obj, path: str) -> None:
     if isinstance(obj, dict):
         # Aba Resumo
         ws = wb.create_sheet("Resumo")
+        ORIGEM_LABEL = {
+            "manual_drive":         "Upload manual (Drive)",
+            "fnet_consolidado":     "FNet (versão consolidada)",
+            "fnet":                 "FNet (termo + aditamentos)",
+            "fnet_so_aditamentos":  "FNet (SÓ aditamentos — análise incompleta)",
+            "ausente":              "AUSENTE — faça upload em Drive:/CRIs/{cod}/manual_termo.pdf",
+            "n/a":                  "—",
+        }
+        origem = obj.get("termo_origem") or "n/a"
+        origem_label = ORIGEM_LABEL.get(origem, origem)
+        if origem == "ausente":
+            origem_label = origem_label.replace("{cod}", obj.get("codigo_if") or "<código>")
+
         campos = [
             ("Código IF",          "codigo_if"),
             ("ISIN",               "isin"),
@@ -294,10 +387,14 @@ def _dump_excel(obj, path: str) -> None:
             ("Devedor",            "devedor"),
             ("Descrição",          "descricao"),
             ("Fase",               "fase"),
+            ("Origem do Termo",    None),  # tratado abaixo
         ]
         for i, (label, key) in enumerate(campos, 1):
             ws.cell(row=i, column=1, value=label).font = Font(bold=True)
-            ws.cell(row=i, column=2, value=obj.get(key))
+            if key is None and label == "Origem do Termo":
+                ws.cell(row=i, column=2, value=origem_label)
+            else:
+                ws.cell(row=i, column=2, value=obj.get(key))
         ws.column_dimensions["A"].width = 25
         ws.column_dimensions["B"].width = 55
 
