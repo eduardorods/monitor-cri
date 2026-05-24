@@ -413,7 +413,9 @@ def _categorizar(*campos: Optional[str]) -> Optional[str]:
         return "aditamento"
     if "termo de securitiza" in texto:
         return "termo_securitizacao"
-    if "ata" in texto and "assembleia" in texto:
+    # OR (não AND): documentos podem se chamar só "Ata da AGE" ou só "Assembleia
+    # Geral Extraordinária dos Titulares de CRI".
+    if "ata" in texto or "assembleia" in texto:
         return "ata_assembleia"
     if any(m in texto for m in ("relatório do agente", "relatorio do agente",
                                  "relatório anual do agente", "relatório do trustee")):

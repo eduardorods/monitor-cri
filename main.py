@@ -172,6 +172,11 @@ def _baixar_e_analisar(info, dir_destino: str):
     alvo_dir = os.path.join(dir_destino, info.codigo_if or "cri")
     print(f"Baixando PDFs para {alvo_dir}...", file=sys.stderr)
     print(f"  Total de documentos disponíveis: {len(info.documentos)}", file=sys.stderr)
+    from collections import Counter
+    contagem_cat = Counter((d.categoria_normalizada or "(sem categoria)")
+                            for d in info.documentos)
+    print(f"  Categorias detectadas: "
+          f"{dict(contagem_cat)}", file=sys.stderr)
 
     # 1) Tenta detectar arquivo manual no Drive
     manual_termo = None
