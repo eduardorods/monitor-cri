@@ -106,15 +106,26 @@ def baixar_manuais(subpasta: str, dir_destino: str,
     upload manual do usuário (escape hatch quando FNet não tem o termo original).
     Se um arquivo de mesmo nome já existir localmente, NÃO sobrescreve.
     Retorna lista de caminhos locais (incluindo arquivos pré-existentes).
+
+    Falhas de autenticação/rede do Drive NÃO são fatais: loga aviso e retorna [].
     """
-    service = obter_servico()
+    try:
+        service = obter_servico()
+    except Exception as e:
+        print(f"  Drive: erro ao inicializar credenciais ({e}). Pulando manuais.",
+              file=sys.stderr)
+        return []
     base_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
     if service is None or not base_id:
         return []
-    folder_id = resolver_subpasta(service, base_id, subpasta, criar=False)
-    if folder_id is None:
+    try:
+        folder_id = resolver_subpasta(service, base_id, subpasta, criar=False)
+        if folder_id is None:
+            return []
+        arquivos = listar_arquivos(service, folder_id)
+    except Exception as e:
+        _avisar_drive_indisponivel(e, contexto="busca de manuais")
         return []
-    arquivos = listar_arquivos(service, folder_id)
     manuais = [f for f in arquivos if (f["name"] or "").lower().startswith(prefixo)]
     if not manuais:
         return []
@@ -132,6 +143,19 @@ def baixar_manuais(subpasta: str, dir_destino: str,
     return resultados
 
 
+def _avisar_drive_indisponivel(erro: Exception, contexto: str) -> None:
+    """Imprime aviso quando o Drive falha por auth ou rede."""
+    nome_erro = type(erro).__name__
+    msg = str(erro)
+    if "invalid_grant" in msg or nome_erro == "RefreshError":
+        print(f"  Drive: refresh token inválido/expirado ({contexto}). "
+              f"Regere com 'python get_drive_token.py' e atualize o secret "
+              f"GOOGLE_REFRESH_TOKEN. Seguindo sem Drive.", file=sys.stderr)
+    else:
+        print(f"  Drive: falha em {contexto} ({nome_erro}: {msg}). "
+              f"Seguindo sem Drive.", file=sys.stderr)
+
+
 def upload(caminhos: list[str], subpasta: Optional[str] = None,
            skip_existing: bool = False,
            replace_existing: bool = False) -> list[str]:
@@ -141,7 +165,11 @@ def upload(caminhos: list[str], subpasta: Optional[str] = None,
     replace_existing: atualiza conteúdo do arquivo existente em vez de criar duplicata.
     Padrão (ambos False): cria novo (pode gerar duplicatas — comportamento legado).
     """
-    service = obter_servico()
+    try:
+        service = obter_servico()
+    except Exception as e:
+        _avisar_drive_indisponivel(e, contexto="inicialização do upload")
+        return []
     base_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
     if service is None or not base_id:
         print("Credenciais OAuth ou GOOGLE_DRIVE_FOLDER_ID não configurados. "
@@ -155,11 +183,15 @@ def upload(caminhos: list[str], subpasta: Optional[str] = None,
         print("googleapiclient não instalado.", flush=True)
         return []
 
-    destino_id = resolver_subpasta(service, base_id, subpasta, criar=True)
-
-    existentes: dict[str, str] = {}
-    if skip_existing or replace_existing:
-        existentes = {f["name"]: f["id"] for f in listar_arquivos(service, destino_id)}
+    try:
+        destino_id = resolver_subpasta(service, base_id, subpasta, criar=True)
+        existentes: dict[str, str] = {}
+        if skip_existing or replace_existing:
+            existentes = {f["name"]: f["id"]
+                          for f in listar_arquivos(service, destino_id)}
+    except Exception as e:
+        _avisar_drive_indisponivel(e, contexto="resolução de subpasta")
+        return []
 
     links = []
     for caminho in caminhos:

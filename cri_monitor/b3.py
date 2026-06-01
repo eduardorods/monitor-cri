@@ -401,15 +401,22 @@ def _build_documento_fnet(doc: dict) -> Documento:
         url = f"{FNET_BASE_URL}downloadDocumento?id={doc_id}&cvm=true"
     nome = (doc.get("descricao") or doc.get("nomeDocumento") or
             doc.get("nome") or doc.get("name"))
-    tipo = (doc.get("tipoDocumento") or doc.get("tipo") or
-            doc.get("typeName"))
-    categoria = (doc.get("categoriaDocumento") or doc.get("categoria") or
+    # Inclui as 'descricaoXxxDocumento': são as versões legíveis dos campos
+    # numéricos (tipoDocumento, categoriaDocumento). Sem elas, FNet retorna
+    # apenas IDs e nada bate na categorização por substring.
+    tipo = (doc.get("descricaoTipoDocumento") or doc.get("tipoDocumento") or
+            doc.get("tipo") or doc.get("typeName"))
+    categoria = (doc.get("descricaoCategoriaDocumento") or
+                 doc.get("categoriaDocumento") or doc.get("categoria") or
                  doc.get("categoryName"))
+    especie = (doc.get("descricaoEspecieDocumento") or
+               doc.get("especieDocumento"))
+    assunto = doc.get("assunto") or doc.get("descricaoAssunto")
     return Documento(
         nome=nome,
         tipo=tipo,
         categoria=categoria,
-        categoria_normalizada=_categorizar(nome, tipo, categoria),
+        categoria_normalizada=_categorizar(nome, tipo, categoria, especie, assunto),
         data_entrega=doc.get("dataEntrega") or doc.get("submissionDate"),
         data_referencia=doc.get("dataReferencia") or doc.get("referenceDate"),
         url=url,

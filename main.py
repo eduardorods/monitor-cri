@@ -175,8 +175,15 @@ def _baixar_e_analisar(info, dir_destino: str):
     from collections import Counter
     contagem_cat = Counter((d.categoria_normalizada or "(sem categoria)")
                             for d in info.documentos)
-    print(f"  Categorias detectadas: "
-          f"{dict(contagem_cat)}", file=sys.stderr)
+    print(f"  Categorias detectadas: {dict(contagem_cat)}", file=sys.stderr)
+    # Diagnóstico: se houver muitos docs sem categoria, mostra exemplos para
+    # facilitar identificar campos FNet que estamos ignorando.
+    sem_cat = [d for d in info.documentos if not d.categoria_normalizada]
+    if sem_cat:
+        print(f"  Amostra de docs SEM CATEGORIA (até 8):", file=sys.stderr)
+        for d in sem_cat[:8]:
+            print(f"    - nome={d.nome!r} tipo={d.tipo!r} "
+                  f"categoria={d.categoria!r}", file=sys.stderr)
 
     # 1) Tenta detectar arquivo manual no Drive
     manual_termo = None
